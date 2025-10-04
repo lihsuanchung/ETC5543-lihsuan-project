@@ -1,0 +1,90 @@
+---
+title: "get_csv_data"
+format: html
+editor: visual
+---
+```{r}
+# ============================================================
+# Batch Data Extraction for Appointments and Referrals (Urology Only)
+# ============================================================
+
+# ---- Packages ----
+library(DBI)
+library(odbc)
+library(glue)
+
+# ---- Parameters ----
+# List of financial years you want to extract
+target_years <- c(2024, 2025, 2026)
+target_specialty <- "Urology"
+
+# Directory where the CSV files will be saved
+save_dir <- "raw_data_extract_urology"
+dir.create(save_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ---- Connect (SQL Server) ----
+con <- dbConnect(
+  odbc(),
+  Driver   = "ODBC Driver 17 for SQL Server",
+  Server   = "bidbprod",
+  Database = "HealthCentral",
+  Trusted_Connection = "Yes",
+  Encrypt  = "Yes",
+  TrustServerCertificate = "Yes"
+)
+
+# ---- Loop through each year, query both datasets, and save to CSV ----
+for (year in target_years) {
+  
+  print(paste0("===== Processing Financial Year: ", year, " ====="))
+  
+  # --- 1. Extract APPOINTMENT Data ---
+  print(paste0(" -> 1. Extracting APPOINTMENTS for ", target_specialty, "..."))
+  
+  appointment_sql <- glue::glue_sql("
+    SELECT
+        a.*,
+        sp.MedicalSpecialty
+    FROM HealthCentral.CIM.vwOP_Appointments AS a
+    JOIN HealthCentral.CIM.vwIP_DescSpecialtyProgramForCube AS sp
+      ON a.ClinicSpecialtyProviderRowIdentifier = sp.ProviderRowIdentifier
+    WHERE a.FinancialYear = {year_val}
+      AND sp.MedicalSpecialty = {specialty_val}
+  ", year_val = year, specialty_val = target_specialty, .con = con)
+  
+  appointment_data <- dbGetQuery(con, appointment_sql)
+  
+  appt_file_path <- file.path(save_dir, paste0("appointments_urology_fy", year, ".csv"))
+  write.csv(appointment_data, appt_file_path, row.names = FALSE, na = "")
+  print(paste0("    -> Saved ", nrow(appointment_data), " appointment rows to: ", appt_file_path))
+
+  # --- 2. Extract REFERRAL Data ---
+  print(paste0(" -> 2. Extracting REFERRALS for ", target_specialty, "..."))
+  
+  referral_sql <- glue::glue_sql("
+    SELECT
+        R.*
+    FROM
+        [HealthCentral].dbo.FactReferral R
+    JOIN 
+        [HealthCentral].dbo.DimSpecialty sp ON R.ReferredToSpecialtyId = sp.SpecialtyId
+    WHERE
+        sp.SpecialtyDescription = {specialty_val}
+        AND R.FinancialYear = {year_val}
+  ", year_val = year, specialty_val = target_specialty, .con = con)
+  
+  referral_data <- dbGetQuery(con, referral_sql)
+  
+  ref_file_path <- file.path(save_dir, paste0("referrals_urology_fy", year, ".csv"))
+  write.csv(referral_data, ref_file_path, row.names = FALSE, na = "")
+  print(paste0("    -> Saved ", nrow(referral_data), " referral rows to: ", ref_file_path))
+  
+  print("---------------------------------------------------------")
+}
+
+# --- Close the database connection ---
+dbDisconnect(con)
+
+print("All data extraction complete.")
+```
+
