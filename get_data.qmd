@@ -3,6 +3,7 @@ title: "get_csv_data"
 format: html
 editor: visual
 ---
+
 ```{r}
 # ============================================================
 # Batch Data Extraction for Appointments and Referrals (Urology Only)
@@ -88,3 +89,57 @@ dbDisconnect(con)
 print("All data extraction complete.")
 ```
 
+
+```{r}
+# ============================================================
+# STEP A — Extract Urology Attended Appointments from SQL → CSV
+# ============================================================
+
+library(DBI)
+library(odbc)
+library(glue)
+library(dplyr)
+
+# ---- Parameters ----
+specialty   <- "Urology"
+year_target <- 2025
+output_file <- "data/appointments_urology_fy2025.csv"
+
+# ---- Connect ----
+con <- dbConnect(
+  odbc(),
+  Driver   = "ODBC Driver 17 for SQL Server",
+  Server   = "bidbprod",
+  Database = "HealthCentral",
+  Trusted_Connection = "Yes",
+  Encrypt  = "Yes",
+  TrustServerCertificate = "Yes"
+)
+
+# ---- SQL Query ----
+specialty_like <- paste0(specialty, "%")
+
+sql_query <- glue_sql("
+  SELECT
+      a.*,
+      sp.MedicalSpecialty
+  FROM HealthCentral.CIM.vwOP_Appointments AS a
+  JOIN HealthCentral.CIM.vwIP_DescSpecialtyProgramForCube AS sp
+    ON a.ClinicSpecialtyProviderRowIdentifier = sp.ProviderRowIdentifier
+  WHERE a.FinancialYear = {year_target}
+    AND sp.MedicalSpecialty LIKE {specialty_like}
+    AND ISNULL(a.TotalAttended,0) = 1  -- attended only
+", .con = con)
+
+# ---- Get data ----
+df_attended <- dbGetQuery(con, sql_query)
+
+# ---- Save to CSV ----
+dir.create("data", showWarnings = FALSE, recursive = TRUE)
+write.csv(df_attended, output_file, row.names = FALSE)
+message("✅ Saved attended appointment data to: ", output_file)
+
+# ---- Close connection ----
+dbDisconnect(con)
+
+```

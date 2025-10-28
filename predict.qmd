@@ -1,0 +1,152 @@
+---
+title: "predict"
+format: html
+editor: visual
+---
+
+```{r}
+# =========================
+# Urology weekly Supply–Demand (FY2025)
+# - Supply: 2025 appointments (NewAttended + ReviewAttended)
+# - Demand: Accepted referrals per week × avg_reviews_per_referral (calibrated from 2025 attended)
+# =========================
+
+library(tidyverse)
+library(lubridate)
+
+# ---------------------
+# 1) Load 2025 appointments (exact columns from your CSV)
+# ---------------------
+appointments_2025 <- read_csv("data/appointments_urology_fy2025.csv", show_col_types = FALSE) %>%
+  transmute(
+    ClinicCode,
+    AppointmentDatetime = ymd_hms(AppointmentDatetime),
+    Urgency,                       # 1=Urgent, 2=Semi, 3=Routine
+    TotalAppointments,             # capacity proxy used in your weekday DNA chart
+    TotalAttended,                 # 1 if attended
+    NewAttended,                   # count flags already provided in CSV
+    ReviewAttended,                # count flags already provided in CSV
+    ReferralId,
+    FinancialYear,
+    FinancialPeriod
+  ) %>%
+  filter(FinancialYear == 2025, !is.na(AppointmentDatetime))
+
+# ---------------------
+# 2) Supply (weekly)
+#    Option A: observed attended capacity = NewAttended + ReviewAttended  (recommended)
+#    Option B: booked capacity proxy = TotalAppointments (if你想用提供的門診量)
+# ---------------------
+supply_weekly_overall <- appointments_2025 %>%
+  mutate(week = floor_date(AppointmentDatetime, "week", week_start = 1)) %>%
+  group_by(week) %>%
+  summarise(
+    new_attended    = sum(NewAttended, na.rm = TRUE),
+    review_attended = sum(ReviewAttended, na.rm = TRUE),
+    total_attended  = new_attended + review_attended,
+    total_appts     = sum(TotalAppointments, na.rm = TRUE), # 若要用TotalAppointments當供給，這欄可用
+    .groups = "drop"
+  ) %>%
+  arrange(week)
+
+#（如需依診間供給）
+supply_weekly_by_clinic <- appointments_2025 %>%
+  mutate(week = floor_date(AppointmentDatetime, "week", week_start = 1)) %>%
+  group_by(week, ClinicCode) %>%
+  summarise(
+    new_attended    = sum(NewAttended, na.rm = TRUE),
+    review_attended = sum(ReviewAttended, na.rm = TRUE),
+    total_attended  = new_attended + review_attended,
+    total_appts     = sum(TotalAppointments, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(week, ClinicCode)
+
+#（如需依 Urgency 供給）
+supply_weekly_by_urgency <- appointments_2025 %>%
+  mutate(week = floor_date(AppointmentDatetime, "week", week_start = 1)) %>%
+  group_by(week, Urgency) %>%
+  summarise(
+    new_attended    = sum(NewAttended, na.rm = TRUE),
+    review_attended = sum(ReviewAttended, na.rm = TRUE),
+    total_attended  = new_attended + review_attended,
+    total_appts     = sum(TotalAppointments, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(week, Urgency)
+
+# ---------------------
+# 3) Calibrate avg_reviews_per_referral (from 2025 attended)
+#    = For each ReferralId that started (has NewAttended>0), reviews_per_referral = sum(ReviewAttended)/sum(NewAttended)
+# ---------------------
+review_stats_2025 <- appointments_2025 %>%
+  group_by(ReferralId) %>%
+  summarise(
+    n_new    = sum(NewAttended, na.rm = TRUE),
+    n_review = sum(ReviewAttended, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(ReferralId), n_new > 0)
+
+avg_reviews_per_referral <- mean(review_stats_2025$n_review / review_stats_2025$n_new, na.rm = TRUE)
+message(sprintf("Avg reviews per referral (attended, FY2025): %.3f", avg_reviews_per_referral))
+
+# ---------------------
+# 4) Load referrals (exact columns from your CSV)
+#    - Accepted: ReferralStatusRefId == 541
+#    - Exclude ArchiveFlag == TRUE
+# ---------------------
+referrals <- read_csv("data/referrals_urology_from_2024-07-01.csv", show_col_types = FALSE) %>%
+  transmute(
+    ReferralId,
+    ReferralStatusRefId,
+    ReferralReceivedDateTime,   # looks like m/d/Y or m/d/Y H:M
+    ArchiveFlag = as.logical(ArchiveFlag)
+  ) %>%
+  filter(!ArchiveFlag)
+
+# Robust parse (the CSV shows like "7/15/2024" and sometimes time):
+referrals <- referrals %>%
+  mutate(
+    ReferralReceivedDateTime = parse_date_time(
+      ReferralReceivedDateTime,
+      orders = c("mdy HMS","mdy HM","mdy"),
+      tz = "Australia/Melbourne"
+    )
+  ) %>%
+  filter(!is.na(ReferralReceivedDateTime))
+
+# ---------------------
+# 5) Demand (weekly, overall Urology)
+#    Demand = weekly Accepted referrals + expected reviews
+# ---------------------
+weekly_demand <- referrals %>%
+  filter(ReferralStatusRefId == 541) %>%  # Accepted
+  mutate(week = floor_date(ReferralReceivedDateTime, "week", week_start = 1)) %>%
+  group_by(week) %>%
+  summarise(
+    new_referrals    = n_distinct(ReferralId),
+    expected_reviews = new_referrals * avg_reviews_per_referral,
+    total_demand     = new_referrals + expected_reviews,
+    .groups = "drop"
+  ) %>%
+  arrange(week)
+
+# ---------------------
+# 6) Combine (overall)
+#    - If you prefer TotalAppointments as supply, switch `total_attended` → `total_appts`.
+# ---------------------
+weekly_supply_demand <- weekly_demand %>%
+  full_join(supply_weekly_overall, by = "week") %>%
+  arrange(week) %>%
+  replace_na(list(
+    new_referrals = 0, expected_reviews = 0, total_demand = 0,
+    new_attended = 0, review_attended = 0, total_attended = 0,
+    total_appts = 0
+  ))
+
+# Quick peek
+print(head(weekly_supply_demand, 12))
+
+```
+

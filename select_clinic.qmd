@@ -1,0 +1,426 @@
+---
+title: "select_clinic"
+author: "William"
+format: html
+editor: visual
+---
+
+```{r}
+# ============================================================
+# STEP B — Reproduce analysis from CSV (no DB access required)
+# - Input:  data/appointments_urology_fy2025.csv
+# - Outputs:
+#     charts_fy2025_urology/*.png
+#     data/appointments_urology_fy2025_clean.csv
+# ============================================================
+
+# ---- Packages ----
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(stringr)
+library(forcats)
+library(lubridate)
+
+# ---- Parameters ----
+year_target <- 2025
+in_file     <- "data/appointments_urology_fy2025.csv"
+save_dir    <- "charts_fy2025_urology"
+dir.create(save_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ---- Helpers ----
+first_existing_name <- function(df, candidates) {
+  hits <- intersect(candidates, names(df))
+  if (length(hits) == 0) return(NA_character_)
+  hits[1]
+}
+col_or_na <- function(df, nm, default = NA) {
+  # safely return a column (or default if not found)
+  if (!is.na(nm) && nm %in% names(df)) df[[nm]] else default
+}
+
+# ---- 0) Load raw CSV ----
+df_raw <- read_csv(in_file, show_col_types = FALSE)
+
+# ---- 1) Harmonise key columns so downstream code is stable ----
+clinic_name_col <- first_existing_name(df_raw, c("ClinicName","AppointmentClinicName","AppointmentClinic","LocationName"))
+clinic_code_col <- first_existing_name(df_raw, c("ClinicCode","SourceLocationCode","AppointmentClinicLocationCode"))
+urgency_col     <- first_existing_name(df_raw, c("Urgency","ReferralPriorityRefId","AppointmentUrgency"))
+
+# Optional flags that may or may not exist in your export
+new_att_col     <- first_existing_name(df_raw, c("NewAttended","IsNewAttended"))
+rev_att_col     <- first_existing_name(df_raw, c("ReviewAttended","IsReviewAttended"))
+appt_type_col   <- first_existing_name(df_raw, c("AppointmentTypeRefId"))
+first_att_col   <- first_existing_name(df_raw, c("FirstAttendedAppointment","IsFirstAttended"))
+wait_days_col   <- first_existing_name(df_raw, c("DaysReferralReceivedToFirstAttendedAppointment","DaysRefRecToFirstAtt"))
+
+# ---- 2) Build analysis-ready frame (df_work) ----
+df_work <- df_raw %>%
+  mutate(
+    ClinicName_ = col_or_na(df_raw, clinic_name_col, NA_character_),
+    ClinicCode_ = col_or_na(df_raw, clinic_code_col, NA_character_),
+    Urgency_    = suppressWarnings(as.numeric(col_or_na(df_raw, urgency_col, NA_real_))),
+
+    clinic_lab = case_when(
+      !is.na(ClinicCode_) & ClinicCode_ != "" ~ ClinicCode_,
+      !is.na(ClinicName_) & ClinicName_ != "" ~ ClinicName_,
+      TRUE ~ "Unknown clinic"
+    ),
+
+    # Priority factor
+    priority = case_when(
+      Urgency_ == 1 ~ "Urgent",
+      Urgency_ == 2 ~ "Semi-urgent",
+      Urgency_ == 3 ~ "Routine",
+      TRUE          ~ NA_character_
+    ),
+    priority = factor(priority, levels = c("Urgent","Semi-urgent","Routine")),
+
+    # New vs Review classification (robust fallbacks)
+    NewAttended_    = suppressWarnings(as.integer(col_or_na(df_raw, new_att_col, NA_integer_))),
+    ReviewAttended_ = suppressWarnings(as.integer(col_or_na(df_raw, rev_att_col, NA_integer_))),
+    ApptTypeRefId_  = suppressWarnings(as.integer(col_or_na(df_raw, appt_type_col, NA_integer_))),
+    FirstAttended_  = suppressWarnings(as.integer(col_or_na(df_raw, first_att_col, NA_integer_))),
+    WaitDays_       = suppressWarnings(as.numeric(col_or_na(df_raw, wait_days_col, NA_real_))),
+
+    new_review = case_when(
+      !is.na(NewAttended_)    & NewAttended_    == 1 ~ "New",
+      !is.na(ReviewAttended_) & ReviewAttended_ == 1 ~ "Review",
+      !is.na(FirstAttended_)  & FirstAttended_  == 1 ~ "New",     # fallback if flags exist
+      !is.na(ApptTypeRefId_)  & ApptTypeRefId_  == 1 ~ "New",
+      !is.na(ApptTypeRefId_)  & ApptTypeRefId_  == 2 ~ "Review",
+      TRUE ~ NA_character_
+    ),
+    new_review = factor(new_review, levels = c("New","Review"))
+  ) %>%
+  filter(!is.na(priority), !is.na(new_review))
+
+# Export the cleaned dataset used by all charts (Deliverable #5)
+dir.create("data", showWarnings = FALSE, recursive = TRUE)
+write_csv(df_work, "data/appointments_urology_fy2025_clean.csv")
+
+# ---- Common ordering by total attended ----
+order_tbl <- df_work %>%
+  count(clinic_lab, name = "total_attended") %>%
+  arrange(desc(total_attended))
+clinic_levels <- order_tbl$clinic_lab
+
+# ------------------------------------------------------------
+# Deliverable #1 — Chart 1: Attended by Priority (stacked counts)
+# ------------------------------------------------------------
+label_min <- 15  # show in-segment labels only if n >= 15
+
+pri_counts <- df_work %>%
+  count(clinic_lab, priority, name = "n") %>%
+  mutate(clinic_lab = factor(clinic_lab, levels = clinic_levels)) %>%
+  complete(clinic_lab, priority, fill = list(n = 0)) %>%
+  mutate(seg_label = ifelse(n >= label_min, comma(n), ""))
+
+pri_totals <- pri_counts %>%
+  group_by(clinic_lab) %>%
+  summarise(total = sum(n), .groups = "drop")
+
+plot_pri_counts <- ggplot(pri_counts, aes(x = clinic_lab, y = n, fill = priority)) +
+  geom_col(width = 0.85) +
+  geom_text(aes(label = seg_label),
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "black") +
+  geom_text(data = pri_totals,
+            aes(x = clinic_lab, y = total, label = comma(total)),
+            vjust = -0.3, size = 3.2, fontface = "bold", inherit.aes = FALSE) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title    = paste0("FY", year_target, " Urology — Attended by Priority (per Clinic)"),
+    subtitle = "Bars ordered by total attended volume (descending). Each segment shows counts; top shows total.",
+    x = NULL, y = "Appointments (attended count)", fill = "Priority"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1),
+        panel.grid.major.x = element_blank()) +
+  expand_limits(y = max(pri_totals$total) * 1.12)
+
+ggsave(
+  filename = file.path(save_dir, paste0("fy", year_target, "_urology_priority_counts_by_clinic_labeled.png")),
+  plot     = plot_pri_counts, width = 14, height = 8, dpi = 150
+)
+
+# ------------------------------------------------------------
+# Deliverable #2 — Chart 2: New vs Review (stacked counts)
+# ------------------------------------------------------------
+nr_counts <- df_work %>%
+  count(clinic_lab, new_review, name = "n") %>%
+  mutate(clinic_lab = factor(clinic_lab, levels = clinic_levels)) %>%
+  complete(clinic_lab, new_review, fill = list(n = 0)) %>%
+  mutate(seg_label = ifelse(n >= label_min, comma(n), ""))
+
+nr_totals <- nr_counts %>%
+  group_by(clinic_lab) %>%
+  summarise(total = sum(n), .groups = "drop")
+
+plot_nr_counts <- ggplot(nr_counts, aes(x = clinic_lab, y = n, fill = new_review)) +
+  geom_col(width = 0.85) +
+  geom_text(aes(label = seg_label),
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "black") +
+  geom_text(data = nr_totals,
+            aes(x = clinic_lab, y = total, label = comma(total)),
+            vjust = -0.3, size = 3.2, fontface = "bold", inherit.aes = FALSE) +
+  scale_y_continuous(labels = comma) +
+  scale_fill_manual(values = c("#1f9e89","#e76f51"), name = "Appt Type") +
+  labs(
+    title    = paste0("FY", year_target, " Urology — New vs Review (per Clinic)"),
+    subtitle = "Stacked counts; bars ordered by total attended volume (descending).",
+    x = NULL, y = "Appointments (attended count)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1),
+        panel.grid.major.x = element_blank()) +
+  expand_limits(y = max(nr_totals$total) * 1.12)
+
+ggsave(
+  filename = file.path(save_dir, paste0("fy", year_target, "_urology_new_review_counts_by_clinic_labeled.png")),
+  plot     = plot_nr_counts, width = 14, height = 8, dpi = 150
+)
+
+# ------------------------------------------------------------
+# Deliverable #3 — Chart 3: Urgent average wait (first attended)
+# ------------------------------------------------------------
+min_urgent_n <- 10  # minimum sample size per clinic to show
+
+# Derive "first attended" if your export doesn’t carry an explicit flag
+is_first_attended_col <- if ("FirstAttended_" %in% names(df_work)) "FirstAttended_" else NA_character_
+has_first_flag <- !is.na(is_first_attended_col)
+
+urgent_wait <- df_work %>%
+  filter(priority == "Urgent") %>%
+  {
+    if (has_first_flag) {
+      dplyr::filter(., !!as.name(is_first_attended_col) == 1)
+    } else {
+      # Fallback: keep rows with non-missing wait days and treat them as first attended
+      dplyr::filter(., !is.na(WaitDays_))
+    }
+  } %>%
+  filter(!is.na(WaitDays_)) %>%
+  group_by(clinic_lab) %>%
+  summarise(
+    n_urgent_first = n(),
+    avg_wait_days  = mean(WaitDays_, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(n_urgent_first >= min_urgent_n) %>%
+  mutate(
+    clinic_lab = fct_reorder(clinic_lab, avg_wait_days, .desc = TRUE),
+    bar_label  = sprintf("%.1f d (n=%d)", avg_wait_days, n_urgent_first)
+  )
+
+overall_avg_urgent <- df_work %>%
+  filter(priority == "Urgent", !is.na(WaitDays_)) %>%
+  {
+    if (has_first_flag) dplyr::filter(., FirstAttended_ == 1) else .
+  } %>%
+  summarise(overall = mean(WaitDays_, na.rm = TRUE)) %>%
+  pull(overall)
+
+top_row <- levels(urgent_wait$clinic_lab)[1]
+
+p_wait_urgent <- ggplot(urgent_wait, aes(x = clinic_lab, y = avg_wait_days)) +
+  geom_col(fill = "#a6cee3", color = "#4f81bd", width = 0.65) +
+  geom_text(aes(label = bar_label), hjust = -0.10, size = 3.4, color = "black") +
+  geom_hline(yintercept = overall_avg_urgent, linetype = "dashed", linewidth = 0.6, color = "grey35") +
+  annotate("label",
+           x = top_row, y = overall_avg_urgent,
+           label = sprintf("Overall avg = %.1f d", overall_avg_urgent),
+           hjust = -0.10, vjust = -0.8, size = 3.2, fill = "white", label.size = 0.2) +
+  coord_flip(clip = "off") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title    = paste0("FY", year_target, " Urology — Urgent average wait (first attended)"),
+    subtitle = paste0("Sorted by average days.  n ≥ ", min_urgent_n,
+                      " urgent-first per clinic.  Dashed line = overall average."),
+    x = NULL, y = "Average wait days (Urgent, first appointment)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.y = element_blank(),
+        plot.margin = margin(10, 40, 10, 10)) +
+  expand_limits(y = max(c(urgent_wait$avg_wait_days, overall_avg_urgent)) * 1.15)
+
+ggsave(
+  filename = file.path(save_dir, paste0("fy", year_target, "_urology_urgent_avg_wait_by_clinic.png")),
+  plot     = p_wait_urgent, width = 12, height = 9, dpi = 150
+)
+
+# ------------------------------------------------------------
+# Deliverable #4 — Chart 4: Diverging KPI (focus clinics)
+#  - Left (negative): Urgent 30d %
+#  - Right (positive): Routine 365d %
+#  - Uses explicit KPI flags if present; otherwise derives from WaitDays_ & first attendance
+# ------------------------------------------------------------
+
+focus_clinics <- c("2078B","MURCONP","BUSTONM","MURBONP","2017B","BURCALP","368M","MURONCP")
+
+# Prefer explicit KPI columns if they exist in the export:
+urg_seen30_col <- first_existing_name(df_work, c("UrgentPatientsSeenWithin30DaysInternal","UrgentSeenWithin30dFlag"))
+urg_den_col    <- first_existing_name(df_work, c("UrgentPatientInternal","UrgentFirstAttendedFlag"))
+rut_seen365_col<- first_existing_name(df_work, c("RoutinePatientsSeenWithin365DaysInternal","RoutineSeenWithin365dFlag"))
+rut_den_col    <- first_existing_name(df_work, c("RoutinePatientInternal","RoutineFirstAttendedFlag"))
+
+derive_kpi <- function(df) {
+  # Derive urgent/routine KPI numerators/denominators from first-attended and WaitDays_
+  d_urg <- df %>%
+    filter(priority == "Urgent") %>%
+    {
+      if ("FirstAttended_" %in% names(.)) dplyr::filter(., FirstAttended_ == 1) else .
+    } %>%
+    mutate(
+      urg_num = ifelse(!is.na(WaitDays_) & WaitDays_ <= 30, 1L, 0L),
+      urg_den = ifelse(!is.na(WaitDays_), 1L, 0L)
+    ) %>%
+    group_by(clinic_lab) %>%
+    summarise(urg_num = sum(urg_num), urg_den = sum(urg_den), .groups = "drop")
+
+  d_rut <- df %>%
+    filter(priority == "Routine") %>%
+    {
+      if ("FirstAttended_" %in% names(.)) dplyr::filter(., FirstAttended_ == 1) else .
+    } %>%
+    mutate(
+      rut_num = ifelse(!is.na(WaitDays_) & WaitDays_ <= 365, 1L, 0L),
+      rut_den = ifelse(!is.na(WaitDays_), 1L, 0L)
+    ) %>%
+    group_by(clinic_lab) %>%
+    summarise(rut_num = sum(rut_num), rut_den = sum(rut_den), .groups = "drop")
+
+  full_join(d_urg, d_rut, by = "clinic_lab")
+}
+
+if (!is.na(urg_seen30_col) && !is.na(urg_den_col) && !is.na(rut_seen365_col) && !is.na(rut_den_col)) {
+  # Use explicit columns
+  kpi_all <- df_work %>%
+    group_by(clinic_lab) %>%
+    summarise(
+      urg_num = sum(coalesce(.data[[urg_seen30_col]], 0), na.rm = TRUE),
+      urg_den = sum(coalesce(.data[[urg_den_col]],    0), na.rm = TRUE),
+      rut_num = sum(coalesce(.data[[rut_seen365_col]],0), na.rm = TRUE),
+      rut_den = sum(coalesce(.data[[rut_den_col]],    0), na.rm = TRUE),
+      .groups = "drop"
+    )
+} else {
+  # Derive from first-attended + wait days
+  kpi_all <- derive_kpi(df_work)
+}
+
+# Focus subset
+kpi_wide <- kpi_all %>%
+  filter(clinic_lab %in% focus_clinics) %>%
+  filter(urg_den > 0, rut_den > 0) %>%
+  mutate(
+    pct_urgent  = 100 * urg_num / urg_den,
+    pct_routine = 100 * rut_num / rut_den
+  ) %>%
+  arrange(pct_urgent) %>%
+  mutate(clinic_flag = factor(clinic_lab, levels = clinic_lab))
+
+# ALL-clinic overall averages
+overall_urg_all <- 100 * sum(kpi_all$urg_num, na.rm = TRUE) / sum(kpi_all$urg_den, na.rm = TRUE)
+overall_rut_all <- 100 * sum(kpi_all$rut_num, na.rm = TRUE) / sum(kpi_all$rut_den, na.rm = TRUE)
+
+# Focus-only averages
+overall_urg_focus <- 100 * sum(kpi_wide$urg_num) / sum(kpi_wide$urg_den)
+overall_rut_focus <- 100 * sum(kpi_wide$rut_num) / sum(kpi_wide$rut_den)
+
+# Long format & diverging values
+div_long <- kpi_wide %>%
+  transmute(
+    clinic_flag,
+    `Urgent 30d`   = -pct_urgent,   # negative → left
+    `Routine 365d` =  pct_routine   # positive → right
+  ) %>%
+  pivot_longer(-clinic_flag, names_to = "KPI", values_to = "value") %>%
+  mutate(
+    KPI   = factor(KPI, levels = c("Urgent 30d", "Routine 365d")),
+    label = paste0(round(abs(value), 1), "%"),
+    hjust = ifelse(value < 0, 1.05, -0.05)
+  )
+
+x_max <- max(abs(div_long$value),
+             overall_urg_all, overall_rut_all,
+             overall_urg_focus, overall_rut_focus, na.rm = TRUE)
+x_lim <- ceiling(x_max / 10) * 10 * 1.15
+top_row <- levels(kpi_wide$clinic_flag)[1]
+
+p_div_focus <- ggplot(div_long, aes(y = clinic_flag, x = value, fill = KPI)) +
+  geom_col(width = 0.65, color = "grey40") +
+  geom_text(aes(label = label), hjust = div_long$hjust, size = 3.0) +
+  geom_vline(xintercept = 0, color = "grey40") +
+  # dashed = ALL clinics (service-wide)
+  geom_vline(xintercept = -overall_urg_all,  linetype = "dashed", linewidth = 0.7, color = "#e76f51") +
+  geom_vline(xintercept =  overall_rut_all,  linetype = "dashed", linewidth = 0.7, color = "#2a9d8f") +
+  # dotted = focus subset average
+  geom_vline(xintercept = -overall_urg_focus, linetype = "dotted", linewidth = 0.7, color = "#e76f51") +
+  geom_vline(xintercept =  overall_rut_focus, linetype = "dotted", linewidth = 0.7, color = "#2a9d8f") +
+  annotate("label", x = -overall_urg_all,  y = top_row,
+           label = sprintf("Urgent overall (ALL) = %.1f%%",  overall_urg_all),
+           hjust = 1.05, vjust = -0.8, size = 3.0, fill = "white", label.size = 0.2) +
+  annotate("label", x = -overall_urg_focus, y = top_row,
+           label = sprintf("Urgent avg (focus) = %.1f%%", overall_urg_focus),
+           hjust = 1.05, vjust =  0.6, size = 3.0, fill = "white", label.size = 0.2) +
+  annotate("label", x =  overall_rut_all,  y = top_row,
+           label = sprintf("Routine overall (ALL) = %.1f%%",  overall_rut_all),
+           hjust = -0.05, vjust = -0.8, size = 3.0, fill = "white", label.size = 0.2) +
+  annotate("label", x =  overall_rut_focus, y = top_row,
+           label = sprintf("Routine avg (focus) = %.1f%%", overall_rut_focus),
+           hjust = -0.05, vjust =  0.6, size = 3.0, fill = "white", label.size = 0.2) +
+  scale_x_continuous(limits = c(-x_lim, x_lim),
+                     labels = function(x) paste0(abs(x), "%")) +
+  scale_fill_manual(values = c("Urgent 30d" = "#f4a261", "Routine 365d" = "#2a9d8f")) +
+  labs(
+    title    = paste0("FY", year_target, " Urology — KPI: Urgent vs Routine (focus clinics)"),
+    subtitle = "Left = Urgent 30d, Right = Routine 365d. Sorted by lowest Urgent KPI.\nDashed = ALL clinics overall; Dotted = average among focus clinics.",
+    x = "KPI compliance (%)", y = NULL, fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.y = element_blank(),
+        plot.margin = margin(10, 40, 10, 10),
+        legend.position = "top")
+
+ggsave(
+  filename = file.path(save_dir, paste0("fy", year_target, "_urology_kpi_diverging_focus_with_overall.png")),
+  plot     = p_div_focus, width = 12, height = 9, dpi = 150
+)
+
+# ------------------------------------------------------------
+# (Optional) Deliverable #5 alternative — New:Review ratio (%)
+# If you prefer a 5th chart instead of the exported clean CSV.
+# ------------------------------------------------------------
+nr_ratio <- df_work %>%
+  count(clinic_lab, new_review, name = "n") %>%
+  group_by(clinic_lab) %>%
+  mutate(pct = 100 * n / sum(n)) %>%
+  ungroup() %>%
+  filter(new_review == "New") %>%  # % of New among attended
+  mutate(clinic_lab = factor(clinic_lab, levels = clinic_levels))
+
+p_nr_ratio <- ggplot(nr_ratio, aes(x = clinic_lab, y = pct)) +
+  geom_col(fill = "#457b9d", width = 0.75) +
+  geom_text(aes(label = paste0(round(pct,1), "%")), vjust = -0.3, size = 3) +
+  labs(
+    title = paste0("FY", year_target, " Urology — New share of attended (per Clinic)"),
+    x = NULL, y = "New as % of attended"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1)) +
+  expand_limits(y = max(nr_ratio$pct, na.rm = TRUE) * 1.12)
+
+ggsave(
+  filename = file.path(save_dir, paste0("fy", year_target, "_urology_new_share_pct_by_clinic.png")),
+  plot     = p_nr_ratio, width = 14, height = 8, dpi = 150
+)
+
+# ---- End of STEP B ----
+
+```
+```
+
