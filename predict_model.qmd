@@ -1,0 +1,1080 @@
+---
+title: "predict_model"
+format: html
+editor: visual
+---
+```{r}
+# ======================================================
+
+# 1) Per-clinic model comparison (print only, no files)
+
+# Train: 2023-07 .. 2025-06 | Test: 2025-07 .. 2025-09
+
+# Models: ARIMA, ETS, TSLM, SNAIVE
+
+# Input CSV (3 cols): ClinicCode, MonthStart (yyyy-MM-01), Qty
+
+# ======================================================
+
+library(readr)
+library(dplyr)
+library(lubridate)
+library(tsibble)
+library(fable)
+library(feasts)
+library(fabletools)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+options(dplyr.summarise.inform = FALSE)
+
+# ---- Read data ----
+
+data_path <- "data/new_referrals_monthly_by_clinic_2023-07_to_2025-09.csv"
+df <- read_csv(data_path, show_col_types = FALSE)
+
+# ---- Build keyed monthly tsibble ----
+
+ts_all <- df %>%
+mutate(MonthStart = as.Date(MonthStart),
+Month      = yearmonth(MonthStart)) %>%
+select(ClinicCode, Month, Qty) %>%
+arrange(ClinicCode, Month) %>%
+as_tsibble(index = Month, key = ClinicCode)
+
+# ---- Windows ----
+
+train_end   <- yearmonth("2025 Jun")
+test_months <- yearmonth(c("2025 Jul","2025 Aug","2025 Sep"))
+
+# ---- Aesthetics ----
+
+cols <- c(ARIMA="#D62728", ETS="#2CA02C", TSLM="#1F77B4", SNAIVE="#9467BD")
+lts  <- c(ARIMA="solid",   ETS="dashed",  TSLM="dotdash", SNAIVE="twodash")
+
+# ---- Process each clinic ----
+
+clinics <- ts_all %>% as_tibble() %>% distinct(ClinicCode) %>% pull()
+
+for (cl in clinics) {
+cat("\n==============================\n")
+cat("Clinic:", cl, "\n")
+cat("==============================\n")
+
+ts_c <- ts_all %>% filter(ClinicCode == cl)
+train_ts <- ts_c %>% filter(Month <= train_end)
+test_ts  <- ts_c %>% filter(Month %in% test_months)
+
+if (n_distinct(test_ts$Month) < 3) {
+warning("Clinic ", cl, ": missing one or more test months (Jul–Sep 2025). Skipping.")
+next
+}
+
+fits <- model(
+train_ts,
+ARIMA  = ARIMA(Qty),
+ETS    = ETS(Qty),
+TSLM   = TSLM(Qty ~ trend() + season()),
+SNAIVE = SNAIVE(Qty)
+)
+
+future_index <- test_ts %>%
+as_tibble() %>% select(ClinicCode, Month) %>% distinct() %>%
+as_tsibble(index = Month, key = ClinicCode)
+
+fc3 <- forecast(fits, new_data = future_index) %>%
+as_tibble() %>%
+transmute(
+ClinicCode, Month, .model,
+Forecast = .mean,
+Date = as.Date(Month)
+) %>% arrange(.model, Month)
+
+errors_tbl <- fc3 %>%
+left_join(test_ts %>% as_tibble() %>% transmute(Month, Actual = Qty), by = "Month") %>%
+mutate(AE = abs(Forecast - Actual),
+SE = (Forecast - Actual)^2,
+APE = AE / pmax(Actual, 1e-9)) %>%
+group_by(.model) %>%
+summarise(RMSE = sqrt(mean(SE)),
+MAE  = mean(AE),
+MAPE = mean(APE)) %>%
+arrange(MAPE) %>%
+mutate(RMSE = round(RMSE, 3),
+MAE  = round(MAE, 3),
+MAPE = scales::percent(MAPE, accuracy = 0.01))
+
+cat("\nHold-out errors (Jul–Sep 2025):\n")
+print(errors_tbl)
+
+winner <- errors_tbl$.model[1]
+cat("\nWinner (lowest MAPE):", winner, "\n")
+
+actual_all <- ts_c %>%
+as_tibble() %>%
+transmute(Date = as.Date(Month), Actual = Qty)
+
+p <- ggplot() +
+annotate("rect",
+xmin = as.Date(min(test_months)),
+xmax = as.Date(max(test_months)),
+ymin = -Inf, ymax = Inf, alpha = 0.12) +
+geom_line(data = actual_all,
+aes(x = Date, y = Actual),
+linewidth = 0.9, color = "grey20") +
+geom_line(data = fc3,
+aes(x = Date, y = Forecast,
+color = .model, linetype = .model,
+group = .model),
+linewidth = 1.1) +
+geom_point(data = fc3,
+aes(x = Date, y = Forecast, color = .model, group = .model),
+size = 2.8) +
+scale_color_manual(values = cols, name = "Model") +
+scale_linetype_manual(values = lts,  name = "Model") +
+scale_x_date(breaks = "3 months", date_labels = "%Y-%m",
+expand = expansion(mult = c(0.01, 0.03))) +
+scale_y_continuous(labels = label_comma()) +
+labs(
+title = paste0("Accepted New Referrals — Actual vs Model Predictions (", cl, ")"),
+subtitle = "Train: 2023-07..2025-06  |  Test overlay: 2025-07..09 (ARIMA / ETS / TSLM / SNAIVE)",
+x = NULL, y = "Referrals"
+) +
+theme_minimal(base_size = 12) +
+theme(panel.grid.minor = element_blank(),
+legend.position = "top")
+
+print(p)
+}
+
+```
+# ======================================================
+
+# 2) Actual (2023-07..2025-09) + Forecast (2025-10..2026-06)
+
+# Models by clinic: 2078B -> SNAIVE; MURCONP -> TSLM
+
+# FY2026 total = JAS 2025 actual + Oct-2025..Jun-2026 forecast
+
+# ======================================================
+```{r}
+
+
+library(readr); library(dplyr); library(lubridate)
+library(tsibble); library(fable); library(feasts); library(fabletools)
+library(tidyr); library(ggplot2); library(scales)
+
+options(dplyr.summarise.inform = FALSE)
+
+data_path <- "data/new_referrals_monthly_by_clinic_2023-07_to_2025-09.csv"
+df <- read_csv(data_path, show_col_types = FALSE)
+
+ts_all <- df %>%
+mutate(MonthStart = as.Date(MonthStart),
+Month      = yearmonth(MonthStart)) %>%
+select(ClinicCode, Month, Qty) %>%
+arrange(ClinicCode, Month) %>%
+as_tsibble(index = Month, key = ClinicCode)
+
+actual_from <- yearmonth("2023 Jul")
+actual_to   <- yearmonth("2025 Sep")
+fy26_jas    <- yearmonth(c("2025 Jul","2025 Aug","2025 Sep"))
+future_ym   <- yearmonth(c("2025 Oct","2025 Nov","2025 Dec",
+"2026 Jan","2026 Feb","2026 Mar",
+"2026 Apr","2026 May","2026 Jun"))
+
+fit_clinic_model <- function(series, clinic_code) {
+if (clinic_code == "2078B") {
+model(series, MODEL = SNAIVE(Qty))
+} else if (clinic_code == "MURCONP") {
+model(series, MODEL = TSLM(Qty ~ trend() + season()))
+} else {
+stop("Unknown clinic code: ", clinic_code)
+}
+}
+
+clinics <- ts_all %>% as_tibble() %>% distinct(ClinicCode) %>% pull()
+summary_rows <- list()
+
+for (cl in clinics) {
+cat("\n==============================\n")
+cat("Clinic:", cl, "\n")
+cat("==============================\n")
+
+ts_c_full <- ts_all %>% filter(ClinicCode == cl)
+
+if (n_distinct((ts_c_full %>% filter(Month %in% fy26_jas))$Month) < 3) {
+warning("Clinic ", cl, ": missing Jul–Sep 2025 actuals. Skipping.")
+next
+}
+
+train_plus <- ts_c_full %>% filter(Month <= yearmonth("2025 Sep"))
+fit_obj    <- fit_clinic_model(train_plus, cl)
+
+future_index <- tibble::tibble(ClinicCode = cl, Month = future_ym) %>%
+as_tsibble(index = Month, key = ClinicCode)
+
+fc <- forecast(fit_obj, new_data = future_index) %>%
+as_tibble() %>%
+transmute(ClinicCode, Month, Forecast = .mean, MonthStart = as.Date(Month))
+
+act_plot <- ts_c_full %>%
+filter(Month >= actual_from, Month <= actual_to) %>%
+as_tibble() %>%
+transmute(ClinicCode, Month, MonthStart = as.Date(Month), Value = Qty, Type = "Actual")
+
+fc_plot <- fc %>% transmute(ClinicCode, Month, MonthStart, Value = Forecast, Type = "Forecast")
+plot_df <- bind_rows(act_plot, fc_plot)
+
+last_actual <- act_plot %>% arrange(Month) %>% slice_tail(n = 1) %>% select(MonthStart, Value)
+first_fc    <- fc_plot  %>% arrange(Month) %>% slice_head(n = 1) %>% select(MonthStart, Value)
+connector   <- dplyr::bind_rows(last_actual, first_fc)
+
+p <- ggplot(plot_df, aes(MonthStart, Value, color = Type, linetype = Type)) +
+geom_line(linewidth = 1) +
+geom_line(data = connector, aes(MonthStart, Value),
+inherit.aes = FALSE, color = "#1F77B4", linetype = "dotted", linewidth = 0.8) +
+geom_vline(xintercept = as.Date("2025-10-01"), linetype = "dotted") +
+scale_color_manual(values = c(Actual = "grey20", Forecast = "#1F77B4")) +
+scale_linetype_manual(values = c(Actual = "solid", Forecast = "dashed")) +
+scale_x_date(breaks = "3 months", date_labels = "%Y-%m",
+expand = expansion(mult = c(0.01, 0.03))) +
+scale_y_continuous(labels = label_comma()) +
+labs(
+title = paste0("Accepted New Referrals — Actual vs Forecast (", cl, ")"),
+subtitle = "Actual: 2023-07..2025-09  |  Forecast: 2025-10..2026-06",
+x = NULL, y = "Referrals", color = NULL, linetype = NULL
+) +
+theme_minimal(base_size = 12) +
+theme(panel.grid.minor = element_blank(),
+legend.position = "top")
+
+print(p)
+
+actual_jas_vec  <- ts_c_full %>% filter(Month %in% fy26_jas) %>% pull(Qty)
+sum_actual_jas  <- sum(actual_jas_vec, na.rm = TRUE)
+sum_fc_oct_jun  <- fc %>% summarise(total = sum(Forecast, na.rm = TRUE)) %>% pull(total)
+fy2026_total    <- sum_actual_jas + sum_fc_oct_jun
+
+cat("\nFY2026 total (", cl, ")\n", sep = "")
+cat("  Actual Jul–Sep 2025  :", round(sum_actual_jas, 2),
+"  [", paste(actual_jas_vec, collapse = " + "), "]\n", sep = "")
+cat("  Forecast Oct–Jun     :", round(sum_fc_oct_jun, 2), "\n")
+cat("  FY2026 Total         :", round(fy2026_total, 2), "\n")
+
+summary_rows[[cl]] <- tibble::tibble(
+ClinicCode          = cl,
+Actual_Jul_Sep      = sum_actual_jas,
+Forecast_Oct_to_Jun = sum_fc_oct_jun,
+FY2026_Total        = fy2026_total
+)
+}
+
+if (length(summary_rows) > 0) {
+summary_tbl <- bind_rows(summary_rows) %>% arrange(ClinicCode)
+
+grand <- summary_tbl %>%
+summarise(
+Actual_Jul_Sep      = sum(Actual_Jul_Sep),
+Forecast_Oct_to_Jun = sum(Forecast_Oct_to_Jun),
+FY2026_Total        = sum(FY2026_Total)
+) %>%
+mutate(ClinicCode = "ALL") %>%
+select(ClinicCode, everything())
+
+cat("\n==============================\n")
+cat("FY2026 totals — by clinic\n")
+cat("==============================\n")
+print(summary_tbl %>% mutate(across(-ClinicCode, ~round(.x, 2))))
+
+cat("\n==============================\n")
+cat("FY2026 totals — combined (2078B + MURCONP)\n")
+cat("==============================\n")
+print(grand %>% mutate(across(-ClinicCode, ~round(.x, 2))))
+}
+
+```
+
+
+```{r}
+# ==========================================
+
+# 3) Urgency distribution (two clinics, print only)
+
+# Input: data/referrals_after_FY2023_2078B_MURCONP.csv
+
+# ==========================================
+
+library(readr)
+library(dplyr)
+library(tidyr)
+
+in_path <- "data/referrals_after_FY2023_2078B_MURCONP.csv"
+
+df <- read_csv(in_path, show_col_types = FALSE)
+
+clinics <- c("2078B", "MURCONP")
+df <- df %>%
+filter(ClinicCode %in% clinics) %>%
+mutate(Urgency = suppressWarnings(as.integer(Urgency))) %>%
+filter(!is.na(Urgency), Urgency %in% c(1, 2, 3))
+
+urg_lab <- c(`1` = "Urgent", `2` = "Semi-urgent", `3` = "Routine")
+
+counts <- df %>%
+count(ClinicCode, Urgency, name = "n") %>%
+mutate(Priority = urg_lab[as.character(Urgency)]) %>%
+select(ClinicCode, Priority, n) %>%
+tidyr::complete(ClinicCode, Priority = c("Urgent","Semi-urgent","Routine"), fill = list(n = 0)) %>%
+arrange(ClinicCode, Priority)
+
+cat("\n=== Counts by clinic × urgency ===\n")
+print(counts, n = 100)
+
+shares_num <- counts %>%
+group_by(ClinicCode) %>%
+mutate(share = if (sum(n) > 0) n / sum(n) else 0) %>%
+ungroup() %>%
+select(ClinicCode, Priority, share) %>%
+pivot_wider(names_from = Priority, values_from = share)
+
+cat("\n=== Shares by clinic × urgency (numeric 0..1) ===\n")
+print(shares_num, n = 100)
+
+fmt_pct <- tryCatch(
+scales::percent_format(accuracy = 0.1),
+error = function(e) function(x) paste0(round(100 * x, 1), "%")
+)
+
+shares_pct <- shares_num %>% mutate(across(where(is.numeric), ~ fmt_pct(.x)))
+
+cat("\n=== Shares by clinic × urgency (%) ===\n")
+print(shares_pct, n = 100)
+
+```
+
+```{r}
+# ================================================================
+
+# 4) LP allocation (single, deduped section) — SN floor = 6
+
+# Scenarios: UN cap ≤ 17 / 18 / 19 / 20
+
+# Produces: Allocated vs Unmet plot + numeric table
+
+# NOTE: This aligns with the backlog simulator's floors.
+
+# ================================================================
+
+suppressPackageStartupMessages({
+library(lpSolve); library(dplyr); library(tidyr)
+library(ggplot2); library(scales)
+})
+
+clinic <- "2078B"
+capacity_by_clinic <- c(`2078B`=39L, `MURCONP`=39L)
+S <- unname(capacity_by_clinic[[clinic]])
+
+classes <- c("UN","URev","SN","SRev","RN","RRev")
+
+# Demand upper bounds (weekly inflow caps). UN is capped per-scenario.
+
+a_base <- c(UN=30, URev=9, SN=11, SRev=6, RN=4, RRev=2)
+
+# Objective weights (priority gradient)
+
+w <- c(UN=6, URev=5, SN=4, SRev=3, RN=2, RRev=1)
+
+# Floors (guardrails) — SN floor = 6 (aligned to your request)
+
+floors <- c(UN=17, URev=0, SN=6, SRev=3, RN=2, RRev=1)
+
+scenarios <- c(`UN cap ≤ 17`=17L, `UN cap ≤ 18`=18L, `UN cap ≤ 19`=19L, `UN cap ≤ 20`=20L)
+
+solve_lp <- function(un_cap) {
+a <- a_base; a["UN"] <- min(a_base["UN"], un_cap)
+
+n <- length(classes); obj <- w[classes]
+A <- list(); dir <- c(); rhs <- c()
+
+# capacity
+
+A[[length(A)+1]] <- rep(1, n); dir <- c(dir, "<="); rhs <- c(rhs, S)
+
+# upper bounds
+
+for (i in seq_len(n)) { row <- rep(0, n); row[i] <- 1
+A[[length(A)+1]] <- row; dir <- c(dir, "<="); rhs <- c(rhs, a[i]) }
+
+# floors
+
+for (i in seq_len(n)) if (floors[i] > 0) { row <- rep(0, n); row[i] <- 1
+A[[length(A)+1]] <- row; dir <- c(dir, ">="); rhs <- c(rhs, floors[i]) }
+
+sol <- lp("max", obj, do.call(rbind, A), dir, rhs)
+stopifnot(sol$status == 0)
+
+tibble(Class = classes,
+InflowCap = as.numeric(a[classes]),
+Allocated = as.numeric(sol$solution)) |>
+mutate(Unmet = pmax(0, InflowCap - Allocated))
+}
+
+alloc_all <- bind_rows(lapply(names(scenarios), function(nm) {
+out <- solve_lp(scenarios[[nm]])
+out$Scenario <- nm
+out
+})) |>
+mutate(Scenario = factor(Scenario, levels = names(scenarios)),
+Class    = factor(Class, levels = classes))
+
+# ---- Plot: Allocated vs Unmet (dodged bars with labels) ----
+
+plot_df <- alloc_all |>
+select(Scenario, Class, Allocated, Unmet) |>
+pivot_longer(c(Allocated, Unmet), names_to = "Metric", values_to = "Value") |>
+mutate(Metric = factor(Metric, levels = c("Allocated","Unmet")))
+
+p_alloc_unmet <- ggplot(plot_df, aes(x = Class, y = Value, fill = Metric)) +
+geom_col(position = position_dodge(width = 0.7), width = 0.7) +
+geom_text(aes(label = number(Value, accuracy = 1)),
+position = position_dodge(width = 0.7),
+vjust = -0.35, size = 3.6, fontface = "bold") +
+facet_wrap(~ Scenario, ncol = 2, scales = "free_y") +
+labs(title = "Allocated vs Unmet — UN caps 17/18/19/20 (SN floor = 6)",
+subtitle = paste("Clinic:", clinic, "| Weekly capacity:", S),
+x = NULL, y = "Cases per week") +
+scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+theme_minimal(base_size = 12) +
+theme(legend.position = "top")
+
+print(p_alloc_unmet)
+
+# (Optional) Inspect numeric table
+
+alloc_all |> arrange(Scenario, match(Class, classes)) |> print(n=100)
+
+```
+
+```{r}
+# ================================================================
+
+# 5) Backlog simulation (10 years) — final plot version ONLY
+
+# - Input (headerless): data/planned_weekly.csv
+
+# Expected columns: ClinicCode, WeekStart, NR, Urgent, Semi, Routine
+
+# - Scenarios: UN ≤ 17, 18, 19, 20
+
+# - Uses the same floors as LP section (SN floor = 6)
+
+# - PLOT STYLE: URev is redrawn last so its line appears on top
+
+# ================================================================
+
+suppressPackageStartupMessages({
+library(readr); library(dplyr); library(tidyr)
+library(lpSolve); library(lubridate); library(ggplot2); library(scales)
+})
+options(digits = 4)
+
+csv_path <- "data/planned_weekly.csv"  # headerless CSV
+clinic   <- "2078B"                    # "2078B" or "MURCONP"
+
+horizon_years <- 10L
+horizon_weeks <- 52L * horizon_years
+
+capacity_by_clinic <- c(`2078B`=39L, `MURCONP`=39L)
+S <- unname(capacity_by_clinic[[clinic]])
+
+# Weekly inflows (lambda) and initial backlog W0
+
+lambda <- c(UN=17, URev=9, SN=11, SRev=6, RN=4, RRev=2)
+
+W0_by_clinic <- list(
+`2078B`   = c(UN=1839, SN=2483, RN=986, URev=0, SRev=0, RRev=0),
+`MURCONP` = c(UN=1040, SN=843,  RN=489, URev=0, SRev=0, RRev=0)
+)
+classes <- c("UN","URev","SN","SRev","RN","RRev")
+W0 <- W0_by_clinic[[clinic]][classes]
+
+# Weights & floors (aligned with LP above)
+
+w      <- c(UN=6, URev=5, SN=4, SRev=3, RN=2, RRev=1)
+floors <- c(UN=17, URev=0, SN=6, SRev=3, RN=2, RRev=1)
+
+a_base <- c(UN=30, URev=9, SN=11, SRev=6, RN=4, RRev=2)
+
+scenarios <- c(UN_LE_17=17L, UN_LE_18=18L, UN_LE_19=19L, UN_LE_20=20L)
+scen_display <- c(
+UN_LE_17 = "UN ≤ 17",
+UN_LE_18 = "UN ≤ 18",
+UN_LE_19 = "UN ≤ 19",
+UN_LE_20 = "UN ≤ 20"
+)
+
+# ---- Read weekly planned CSV & prep ----
+
+planned_raw <- read_csv(
+file = csv_path,
+col_names = c("ClinicCode","WeekStart","NR","Urgent","Semi","Routine"),
+col_types = cols(
+ClinicCode = col_character(),
+WeekStart  = col_character(),
+NR         = col_character(),
+Urgent     = col_double(),
+Semi       = col_double(),
+Routine    = col_double()
+),
+trim_ws = TRUE
+)
+
+planned_raw <- planned_raw %>%
+mutate(
+WeekStart = coalesce(
+suppressWarnings(ymd(WeekStart)),
+suppressWarnings(as_date(ymd_hms(WeekStart))),
+suppressWarnings(dmy(WeekStart))
+) %>% as.Date()
+)
+
+# FY2026 Week 1 anchor
+
+fy0 <- as.Date("2025-10-20")
+
+planned <- planned_raw %>%
+filter(ClinicCode == clinic) %>%
+mutate(Week = as.integer((as.integer(WeekStart - fy0) %/% 7)) + 1L) %>%
+filter(Week >= 1)
+
+planned_long <- planned %>%
+pivot_longer(c(Urgent, Semi, Routine), names_to="Pri", values_to="n") %>%
+mutate(
+Class = case_when(
+NR=="New"    & Pri=="Urgent"  ~ "UN",
+NR=="Review" & Pri=="Urgent"  ~ "URev",
+NR=="New"    & Pri=="Semi"    ~ "SN",
+NR=="Review" & Pri=="Semi"    ~ "SRev",
+NR=="New"    & Pri=="Routine" ~ "RN",
+NR=="Review" & Pri=="Routine" ~ "RRev",
+TRUE ~ NA_character_
+)
+) %>% filter(!is.na(Class))
+
+max_week_in_file <- if (nrow(planned_long)) max(planned_long$Week) else 0L
+max_week <- max(horizon_weeks, max_week_in_file)
+
+planned_full <- planned_long %>%
+complete(Class=classes, Week=1:max_week, fill=list(n=0)) %>%
+arrange(Class, Week)
+
+planned_vec <- function(cls) {
+planned_full %>% filter(Class==cls) %>% arrange(Week) %>% pull(n) %>% as.numeric()
+}
+planned_by_class <- lapply(classes, planned_vec); names(planned_by_class) <- classes
+
+# ---- LP (weekly template s) per scenario ----
+
+solve_lp <- function(un_cap, S, w, floors, a_base) {
+a <- a_base; a["UN"] <- min(a_base["UN"], un_cap)
+n <- length(classes); obj <- w[classes]
+A <- list(); dir <- c(); rhs <- c()
+
+A[[length(A)+1]] <- rep(1, n); dir <- c(dir, "<="); rhs <- c(rhs, S)
+for (i in seq_len(n)) { row <- rep(0, n); row[i] <- 1
+A[[length(A)+1]] <- row; dir <- c(dir, "<="); rhs <- c(rhs, a[i]) }
+for (i in seq_len(n)) if (floors[i] > 0) { row <- rep(0, n); row[i] <- 1
+A[[length(A)+1]] <- row; dir <- c(dir, ">="); rhs <- c(rhs, floors[i]) }
+
+sol <- lp(direction="max", objective.in=obj,
+const.mat=do.call(rbind, A), const.dir=dir, const.rhs=rhs)
+if (sol$status != 0) stop("LP infeasible / not optimal, status = ", sol$status)
+setNames(as.numeric(sol$solution), classes)
+}
+
+s_by_scenario <- lapply(scenarios, solve_lp, S=S, w=w, floors=floors, a_base=a_base)
+
+# ---- Backlog simulator ----
+
+simulate_backlog <- function(W0, lambda, s, planned_by_class, weeks=horizon_weeks) {
+out <- lapply(classes, function(cls) {
+wv <- numeric(weeks+1); wv[1] <- W0[[cls]]
+p <- planned_by_class[[cls]]; if (length(p) < weeks) p <- c(p, rep(0, weeks-length(p)))
+for (t in 1:weeks) {
+serve_t <- min(s[[cls]], p[t] + wv[t])   # planned first, remainder clears backlog
+wv[t+1] <- max(0, wv[t] + lambda[[cls]] - serve_t)
+}
+tibble(Week=0:weeks, Class=cls, Backlog=wv)
+})
+bind_rows(out)
+}
+
+traj_all <- bind_rows(lapply(names(s_by_scenario), function(nm) {
+s <- s_by_scenario[[nm]]
+traj <- simulate_backlog(W0=W0, lambda=lambda, s=s, planned_by_class=planned_by_class, weeks=horizon_weeks)
+traj$Scenario <- scen_display[[nm]]
+traj
+})) %>%
+mutate(
+Scenario = factor(Scenario, levels=scen_display[c("UN_LE_17","UN_LE_18","UN_LE_19","UN_LE_20")]),
+Class = factor(Class, levels=c("UN","URev","SN","SRev","RN","RRev"))
+)
+
+# ---- FINAL PLOT VERSION: draw URev last so it's on top ----
+
+base_df <- traj_all %>% dplyr::filter(Week > 0)
+
+p_lines <- ggplot(base_df, aes(x = Week, y = Backlog, color = Class, group = Class)) +
+geom_line(linewidth = 1.05) +  # draw all classes
+geom_line(                     # redraw URev on top (same width so not thicker)
+data = dplyr::filter(base_df, Class == "URev"),
+linewidth = 1.05, show.legend = FALSE
+) +
+facet_wrap(~ Scenario, ncol = 2, scales = "free_y") +
+scale_y_continuous(labels = scales::label_number(),
+expand = expansion(mult = c(0.02, 0.05))) +
+labs(
+title = paste0("Backlog trajectory over ", horizon_years, " years (by class) — ", clinic),
+subtitle = "URev is redrawn last so its line remains visible on top",
+x = "Week", y = "Backlog (cases)"
+) +
+theme_minimal(base_size = 12) +
+theme(legend.position = "right",
+panel.grid.minor = element_blank())
+
+print(p_lines)
+
+# ---- Quick summary (UN only) ----
+
+summary_UN <- traj_all %>%
+filter(Class == "UN") %>%
+group_by(Scenario) %>%
+summarise(Weeks_to_Clear_UN = ifelse(any(Backlog==0), min(Week[Backlog==0]), NA_integer_),
+.groups="drop")
+print(summary_UN)
+
+```
+
+
+```{r}
+
+# ================================================================
+# Four scenarios with spare-capacity spillover to SN (New total ≤ 20/wk)
+# Policy per week:
+#   1) Serve UN up to UN_quota (17/18/19/20) or UN need
+#   2) Serve URev → SRev → RRev up to their inflows with remaining total capacity
+#   3) If total capacity still remains AND total New < 20, give remainder to SN
+#      (so total New per week never exceeds 20 = 51.3% of S=39)
+#   4) RN stays 0 (can be enabled later)
+# Inflows: UN=17, URev=9, SN=11, SRev=6, RN=4, RRev=2
+# Initial backlogs: UN=680, others=0 (you can change here)
+# Outputs:
+#   (1) Allocation bars (Allocated vs Unmet) per scenario
+#   (2) Backlog lines for 6 classes over 780 weeks with "(needs X weeks)" in facet labels
+#   (3) Table of other-class backlogs at the week UN clears
+# ================================================================
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(ggplot2); library(scales); library(purrr)
+})
+
+# ---- Parameters ----
+S <- 39L
+NEW_MAX <- 20L  # 51.3% of 39 rounded
+classes <- c("UN","URev","SN","SRev","RN","RRev")
+
+lambda <- c(UN=17, URev=9, SN=11, SRev=6, RN=4, RRev=2)
+W0     <- c(UN=680, URev=0, SN=0, SRev=0, RN=0, RRev=0)
+
+scenarios <- c(`New cap = 17`=17L, `New cap = 18`=18L, `New cap = 19`=19L, `New cap = 20`=20L)
+
+# ---- One-week allocator with spillover-to-SN and New-total cap ----
+allocate_one_week <- function(UN_quota, W_vec) {
+  # 1) UN uses up to its quota (or need if smaller)
+  need_UN  <- W_vec["UN"] + lambda["UN"]
+  serve_UN <- min(UN_quota, need_UN)
+  new_used <- serve_UN
+
+  # 2) Reviews with remaining total capacity
+  rem_total <- S - new_used
+
+  serve_URev <- min(rem_total, lambda["URev"]); rem_total <- rem_total - serve_URev
+  serve_SRev <- min(max(rem_total, 0), lambda["SRev"]); rem_total <- rem_total - serve_SRev
+  serve_RRev <- min(max(rem_total, 0), lambda["RRev"]); rem_total <- rem_total - serve_RRev
+
+  # 3) Spillover to SN if there is still total capacity AND New_total < NEW_MAX
+  #    SN can consume (backlog + inflow)
+  need_SN <- W_vec["SN"] + lambda["SN"]
+  allow_SN_by_new_cap <- max(0, NEW_MAX - new_used)
+  serve_SN <- min(max(rem_total, 0), allow_SN_by_new_cap, need_SN)
+
+  # 4) RN fixed 0 for now
+  serve_RN <- 0
+
+  # 5) Next backlogs
+  next_W <- c(
+    UN   = max(0, W_vec["UN"]   + lambda["UN"]   - serve_UN),
+    URev = max(0, W_vec["URev"] + lambda["URev"] - serve_URev),
+    SN   = max(0, W_vec["SN"]   + lambda["SN"]   - serve_SN),
+    SRev = max(0, W_vec["SRev"] + lambda["SRev"] - serve_SRev),
+    RN   = max(0, W_vec["RN"]   + lambda["RN"]   - serve_RN),
+    RRev = max(0, W_vec["RRev"] + lambda["RRev"] - serve_RRev)
+  )
+
+  alloc <- c(UN=serve_UN, URev=serve_URev, SN=serve_SN, SRev=serve_SRev, RN=serve_RN, RRev=serve_RRev)
+  list(next_W = next_W, alloc = alloc)
+}
+
+# ---- Steady-state weekly snapshot for bars (during UN-backlog phase) ----
+allocation_snapshot <- function(UN_quota, W_for_snapshot = c(UN=1e9, URev=0, SN=1e9, SRev=0, RN=0, RRev=0)) {
+  step <- allocate_one_week(UN_quota, W_for_snapshot)
+  alloc <- step$alloc
+  # Unmet is vs inflow in a typical week (backlog phase). For UN with big backlog, unmet vs inflow = 0.
+  unmet <- pmax(0, lambda - pmin(lambda, alloc))
+  tibble(Class = factor(names(alloc), levels = classes),
+         Allocated = as.numeric(alloc),
+         Unmet = as.numeric(unmet))
+}
+
+# ---- Build allocation bar data ----
+alloc_bar_df <- bind_rows(lapply(names(scenarios), function(nm){
+  allocation_snapshot(scenarios[[nm]]) %>% mutate(Scenario = nm)
+})) %>%
+  pivot_longer(cols = c(Allocated, Unmet), names_to = "Metric", values_to = "Value") %>%
+  mutate(Scenario = factor(Scenario, levels = names(scenarios)),
+         Class = factor(Class, levels = classes),
+         Metric = factor(Metric, levels = c("Allocated","Unmet")))
+
+p_alloc <- ggplot(alloc_bar_df, aes(x = Class, y = Value, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.7) +
+  geom_text(aes(label = number(Value, accuracy = 1)),
+            position = position_dodge(width = 0.7),
+            vjust = -0.35, size = 3.6, fontface = "bold") +
+  facet_wrap(~ Scenario, ncol = 2, scales = "free_y") +
+  labs(title = "Allocated vs Unmet — New caps 17/18/19/20 (spill leftover to SN; RN=0)",
+       subtitle = paste("Clinic: 2078B  |  Weekly capacity:", S, "| New-total cap:", NEW_MAX),
+       x = NULL, y = "Cases per week") +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+print(p_alloc)
+
+# ---- Backlog simulation for 15 years (780 weeks) ----
+simulate_scenario <- function(UN_quota, horizon_weeks = 780L) {
+  W <- W0
+  traj  <- tibble(Week = 0L, Class = classes, Backlog = as.numeric(W))
+  sched <- list()
+  for (t in 1:horizon_weeks) {
+    step <- allocate_one_week(UN_quota, W)
+    W    <- step$next_W
+    traj <- bind_rows(traj, tibble(Week = t, Class = classes, Backlog = as.numeric(W)))
+    sched[[t]] <- tibble(Week = t, Class = classes, Served = as.numeric(step$alloc[classes]))
+  }
+  schedule_tbl <- bind_rows(sched)
+
+  # first week UN becomes zero (safe, no warnings)
+  t_clear <- {
+    z <- traj %>% filter(Class=="UN", Backlog==0) %>% pull(Week)
+    if (length(z) == 0) NA_integer_ else min(z)
+  }
+
+  list(traj = traj, schedule = schedule_tbl, t_clear = t_clear)
+}
+
+sim_list <- lapply(scenarios, simulate_scenario)
+
+# ---- Facet labels with "(needs X weeks)" (robust when NA) ----
+needs_weeks <- sapply(sim_list, function(x) x$t_clear)
+facet_labels <- ifelse(is.na(needs_weeks),
+                       paste0(names(needs_weeks), " (needs —)"),
+                       paste0(names(needs_weeks), " (needs ", needs_weeks, " weeks)"))
+names(facet_labels) <- names(scenarios)
+
+traj_df <- bind_rows(lapply(names(sim_list), function(nm){
+  sim_list[[nm]]$traj %>% mutate(Scenario = nm)
+})) %>%
+  mutate(Scenario = factor(Scenario, levels = names(scenarios), labels = facet_labels),
+         Class = factor(Class, levels = classes))
+
+p_traj <- ggplot(traj_df, aes(x = Week, y = Backlog, color = Class)) +
+  geom_line(linewidth = 1.0) +
+  facet_wrap(~ Scenario, ncol = 2, scales = "free_y") +
+  labs(
+    title = "Backlog trajectories over 15 years (780 weeks)",
+    subtitle = "Rule: UN quota first; then URev → SRev → RRev; if capacity left and New<20/wk, spill to SN; RN=0",
+    x = "Week", y = "Backlog (cases)"
+  ) +
+  scale_y_continuous(labels = label_comma()) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+print(p_traj)
+
+# ---- Summary table: weeks to clear UN ----
+summary_tbl <- tibble(
+  Scenario = names(scenarios),
+  UN_quota_perWeek = as.integer(unname(scenarios)),
+  New_total_cap_perWeek = NEW_MAX,
+  Weeks_to_Clear_UN = as.integer(needs_weeks)
+) %>% arrange(UN_quota_perWeek)
+
+cat("\n=== Weeks to clear UN (by scenario) ===\n")
+print(summary_tbl)
+
+# ---- Table: other-class backlogs at UN-clear week (or week 780 if never clears) ----
+other_at_clear <- bind_rows(lapply(names(sim_list), function(nm){
+  t_star <- sim_list[[nm]]$t_clear
+  if (is.na(t_star)) t_star <- 780L
+  sim_list[[nm]]$traj %>%
+    filter(Week == t_star, Class != "UN") %>%
+    mutate(Scenario = nm) %>%
+    select(Scenario, Class, Backlog)
+})) %>%
+  mutate(Scenario = factor(Scenario, levels = names(scenarios))) %>%
+  tidyr::pivot_wider(names_from = Class, values_from = Backlog) %>%
+  arrange(Scenario)
+
+cat("\n=== Other-class backlogs at UN-clear week (or week 780 if never clears) ===\n")
+print(other_at_clear)
+
+```
+
+
+```{r}
+# ================================================================
+# Allocation & Backlog — Baseline rule + give any leftover to URev (extra)
+# Baseline each week (in order):
+#   1) UN up to scenario quota (or need)
+#   2) URev up to its inflow (9), then SRev up to 6, RRev up to 2
+#   3) If capacity still remains AND total New < 20/wk, give remainder to SN
+#   4) RN = 0
+#   5) If capacity STILL remains after 1–4, give ALL leftovers to URev as EXTRA
+# Notes:
+#   - S = 39 per week
+#   - Inflows: UN=17, URev=9, SN=11, SRev=6, RN=4, RRev=2
+#   - Initial backlog: UN=680; others=0
+# Outputs:
+#   (A) Allocation bars (Allocated vs Unmet) for scenarios UN quota = 17/18/19/20
+#   (B) 15-year (780 weeks) backlog lines with "(needs X weeks)"
+#   (C) Summary table: Weeks_to_Clear_UN, other backlogs at that week,
+#       URev_extra (negative) = cumulative URev above inflow up to UN-clear
+# ================================================================
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(ggplot2); library(scales); library(purrr)
+})
+
+# -----------------------
+# Parameters
+# -----------------------
+S <- 39L
+NEW_TOTAL_CAP <- 20L  # max total New per week
+classes <- c("UN","URev","SN","SRev","RN","RRev")
+
+lambda <- c(UN=17, URev=9, SN=11, SRev=6, RN=4, RRev=2)
+W0     <- c(UN=680, URev=0, SN=0, SRev=0, RN=0, RRev=0)
+
+scenarios <- c(`New cap = 17`=17L, `New cap = 18`=18L, `New cap = 19`=19L, `New cap = 20`=20L)
+
+# -----------------------
+# One-week allocator = Baseline rule + leftover to URev (extra)
+# -----------------------
+allocate_one_week <- function(UN_quota, W_vec) {
+  # Need this week
+  need_UN <- W_vec["UN"] + lambda["UN"]
+  need_SN <- W_vec["SN"] + lambda["SN"]
+
+  # 1) UN up to quota
+  serve_UN <- min(UN_quota, need_UN)
+  new_used <- serve_UN
+  rem <- S - serve_UN
+
+  # 2) Reviews up to inflow (baseline)
+  serve_URev_base <- min(rem, lambda["URev"]); rem <- rem - serve_URev_base
+  serve_SRev      <- min(rem, lambda["SRev"]); rem <- rem - serve_SRev
+  serve_RRev      <- min(rem, lambda["RRev"]); rem <- rem - serve_RRev
+
+  # 3) Spill to SN if capacity remains and total New < cap
+  allow_SN_by_new <- max(0, NEW_TOTAL_CAP - new_used)
+  serve_SN        <- min(max(rem,0), allow_SN_by_new, need_SN)
+  new_used <- new_used + serve_SN
+  rem <- rem - serve_SN
+
+  # 4) RN fixed 0
+  serve_RN <- 0
+
+  # 5) Any leftover -> URev EXTRA (above inflow)
+  serve_URev_extra <- max(0, rem)
+  rem <- rem - serve_URev_extra  # should be 0
+
+  # Totals
+  serve_URev_total <- serve_URev_base + serve_URev_extra
+
+  # Backlog updates (URev backlog reduced by at most its inflow)
+  next_W <- c(
+    UN   = max(0, W_vec["UN"]   + lambda["UN"]   - serve_UN),
+    URev = max(0, W_vec["URev"] + lambda["URev"] - min(serve_URev_total, lambda["URev"])),
+    SN   = max(0, W_vec["SN"]   + lambda["SN"]   - serve_SN),
+    SRev = max(0, W_vec["SRev"] + lambda["SRev"] - serve_SRev),
+    RN   = max(0, W_vec["RN"]   + lambda["RN"]   - serve_RN),
+    RRev = max(0, W_vec["RRev"] + lambda["RRev"] - serve_RRev)
+  )
+
+  alloc <- c(UN=serve_UN, URev=serve_URev_total, SN=serve_SN, SRev=serve_SRev, RN=serve_RN, RRev=serve_RRev)
+  extra_uRev <- max(0, serve_URev_total - lambda["URev"])  # for reporting
+  list(next_W = next_W, alloc = alloc, uRev_extra = extra_uRev)
+}
+
+# -----------------------
+# Allocation bars snapshot (while UN has backlog)
+# -----------------------
+allocation_snapshot <- function(UN_quota) {
+  # Assume UN/SN have backlog, others don't
+  # Reproduce the same steps but without state
+  serve_UN <- UN_quota
+  rem <- S - serve_UN
+
+  serve_URev_base <- min(rem, lambda["URev"]); rem <- rem - serve_URev_base
+  serve_SRev      <- min(rem, lambda["SRev"]); rem <- rem - serve_SRev
+  serve_RRev      <- min(rem, lambda["RRev"]); rem <- rem - serve_RRev
+
+  allow_SN_by_new <- max(0, NEW_TOTAL_CAP - serve_UN)
+  serve_SN        <- min(max(rem,0), allow_SN_by_new, 1e9)  # backlog large
+  rem <- rem - serve_SN
+
+  serve_RN <- 0
+  serve_URev_extra <- max(0, rem)
+  serve_URev_total <- serve_URev_base + serve_URev_extra
+
+  alloc <- c(UN=serve_UN, URev=serve_URev_total, SN=serve_SN, SRev=serve_SRev, RN=serve_RN, RRev=serve_RRev)
+  met_for_unmet <- c(
+    UN=serve_UN,
+    URev=min(serve_URev_total, lambda["URev"]),
+    SN=min(serve_SN, lambda["SN"]),
+    SRev=min(serve_SRev, lambda["SRev"]),
+    RN=0, RRev=min(serve_RRev, lambda["RRev"])
+  )
+  unmet <- pmax(0, lambda - met_for_unmet)
+
+  tibble(Class=factor(names(alloc), levels=classes),
+         Allocated=as.numeric(alloc),
+         Unmet=as.numeric(unmet))
+}
+
+alloc_bar_df <- bind_rows(lapply(names(scenarios), function(nm){
+  allocation_snapshot(scenarios[[nm]]) %>% mutate(Scenario = nm)
+})) %>%
+  pivot_longer(c(Allocated, Unmet), names_to="Metric", values_to="Value") %>%
+  mutate(Scenario=factor(Scenario, levels=names(scenarios)),
+         Class=factor(Class, levels=classes),
+         Metric=factor(Metric, levels=c("Allocated","Unmet")))
+
+p_alloc <- ggplot(alloc_bar_df, aes(x=Class, y=Value, fill=Metric)) +
+  geom_col(position=position_dodge(width=0.7), width=0.7) +
+  geom_text(aes(label=number(Value, accuracy=1)),
+            position=position_dodge(width=0.7), vjust=-0.35, size=3.6, fontface="bold") +
+  facet_wrap(~ Scenario, ncol=2, scales="free_y") +
+  labs(
+    title="Allocated vs Unmet — baseline + leftover to URev (SN cap by New≤20; RN=0)",
+    subtitle=paste("Clinic: 2078B | Weekly capacity:", S),
+    x=NULL, y="Cases per week"
+  ) +
+  scale_y_continuous(expand=expansion(mult=c(0.02,0.12))) +
+  theme_minimal(base_size=12) +
+  theme(legend.position="top")
+print(p_alloc)
+
+# -----------------------
+# 15-year simulation per scenario
+# -----------------------
+simulate_scenario <- function(UN_quota, horizon_weeks=780L) {
+  W <- W0
+  traj  <- tibble(Week=0L, Class=classes, Backlog=as.numeric(W))
+  sched <- list()
+  extra_vec <- numeric(horizon_weeks)
+
+  for (t in 1:horizon_weeks) {
+    step <- allocate_one_week(UN_quota, W)
+    W    <- step$next_W
+    traj <- bind_rows(traj, tibble(Week=t, Class=classes, Backlog=as.numeric(W)))
+    sched[[t]] <- tibble(Week=t, Class=classes, Served=as.numeric(step$alloc[classes]))
+    extra_vec[t] <- step$uRev_extra
+  }
+  schedule_tbl <- bind_rows(sched)
+
+  # first week UN becomes zero (NA if never)
+  hits <- traj %>% filter(Class=="UN", Backlog==0) %>% pull(Week)
+  t_clear <- if (length(hits)==0) NA_integer_ else min(hits)
+
+  list(traj=traj, schedule=schedule_tbl, extra=extra_vec, t_clear=t_clear)
+}
+
+sim_list <- lapply(scenarios, simulate_scenario)
+
+# Facet labels
+needs_weeks <- sapply(sim_list, function(x) x$t_clear)
+facet_labels <- ifelse(is.na(needs_weeks),
+                       paste0(names(needs_weeks), " (needs —)"),
+                       paste0(names(needs_weeks), " (needs ", needs_weeks, " weeks)"))
+names(facet_labels) <- names(scenarios)
+
+traj_df <- bind_rows(lapply(names(sim_list), function(nm){
+  sim_list[[nm]]$traj %>% mutate(Scenario=nm)
+})) %>%
+  mutate(Scenario=factor(Scenario, levels=names(scenarios), labels=facet_labels),
+         Class=factor(Class, levels=classes))
+
+p_traj <- ggplot(traj_df, aes(x=Week, y=Backlog, color=Class)) +
+  geom_line(linewidth=1.0) +
+  facet_wrap(~ Scenario, ncol=2, scales="free_y") +
+  labs(
+    title="Backlog trajectories over 15 years (780 weeks)",
+    subtitle="Baseline: UN quota → URev/SRev/RRev (to inflow) → SN if New<20 → RN=0; leftover → URev (extra)",
+    x="Week", y="Backlog (cases)"
+  ) +
+  scale_y_continuous(labels=label_comma()) +
+  theme_minimal(base_size=12) +
+  theme(legend.position="right")
+print(p_traj)
+
+# -----------------------
+# Summary tables
+# -----------------------
+summary_tbl <- tibble(
+  Scenario          = names(scenarios),
+  UN_quota_perWeek  = as.integer(unname(scenarios)),
+  Weeks_to_Clear_UN = as.integer(needs_weeks)
+) %>% arrange(UN_quota_perWeek)
+cat("\n=== Weeks to clear UN (by scenario) ===\n"); print(summary_tbl)
+
+# Backlogs of other classes at UN-clear week (or week 780)
+t_clear_vec <- sapply(sim_list, function(x) if (is.na(x$t_clear)) 780L else x$t_clear)
+other_at_clear <- bind_rows(lapply(names(sim_list), function(nm){
+  t_star <- t_clear_vec[[nm]]
+  sim_list[[nm]]$traj %>%
+    filter(Week==t_star, Class!="UN") %>%
+    mutate(Scenario=nm) %>%
+    select(Scenario, Class, Backlog)
+})) %>%
+  pivot_wider(names_from=Class, values_from=Backlog) %>%
+  arrange(factor(Scenario, levels=names(scenarios)))
+cat("\n=== Other-class backlogs at UN-clear week (or week 780 if never clears) ===\n")
+print(other_at_clear)
+
+# URev_extra (negative): cumulative URev > inflow up to UN-clear week
+uRev_extra_neg <- sapply(names(sim_list), function(nm){
+  t_star <- t_clear_vec[[nm]]
+  -as.integer(sum(sim_list[[nm]]$extra[1:t_star], na.rm = TRUE))
+})
+final_tbl <- summary_tbl %>%
+  left_join(other_at_clear, by="Scenario") %>%
+  mutate(URev_extra = as.integer(uRev_extra_neg[Scenario])) %>%
+  select(Scenario, UN_quota_perWeek, Weeks_to_Clear_UN,
+         URev_extra, URev, SN, SRev, RN, RRev)
+
+cat("\n=== Final summary (URev_extra is negative = leftover consumed by URev above inflow) ===\n")
+print(final_tbl)
+
+```
+
