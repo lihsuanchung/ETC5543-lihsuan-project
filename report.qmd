@@ -1,0 +1,878 @@
+---
+title: "Appointment Optimisation for Urgent in Time Model of Care"
+author: "Li-Hsuan Chung"
+format:
+  report-pdf:
+    toc: true
+    pdf-engine: lualatex
+    number-sections: true
+    keep-tex: false
+execute:
+  cache: true
+  freeze: auto
+---
+
+```{r setup-screening, include=FALSE}
+# Packages
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(stringr)
+library(forcats)
+library(lubridate)
+
+# Global options
+knitr::opts_chunk$set(echo = FALSE,message = FALSE, warning = FALSE, fig.align = "center")
+```
+# Abstract {.unnumbered}
+Specialist clinics face sustained demand pressure, long urgent waits and limited clinician time. Because session supply cannot be expanded meaningfully in the short term, we cannot rely on “adding more clinics” to fix timeliness. This project develops a reproducible decision pipeline to optimise appointment templates under the Urgent in Time Model of Care by reallocating capacity within existing sessions. The workflow combines transparent clinic screening, short-term demand forecasting, and scenario testing with pragmatic capacity-reallocation rules that respect real constraints.
+
+Using de-identified internal data (and a small public sample for reproducibility), we construct weekly activity by priority and contrast demand with session-based supply to reveal actionable gaps. Historically, clinics did not enforce mix constraints for new vs review or by priority, contributing to very long waits for urgent new patients. Simulated template changes rectify this by shifting capacity toward urgent new while safeguarding continuity of care for other cohorts. The recommended template improves urgent timeliness without material spill-over and can be implemented and monitored. The contribution is an auditable end-to-end approach that links model evidence to scheduling levers and a monitoring blueprint to sustain performance.
+
+# Background & Motivation {.unnumbered}
+Public specialist clinics often face more demand than available clinician session time. In the short term, session supply is effectively fixed by staffing and roster constraints, so increasing throughput by “adding sessions” is not a viable lever. At the same time, historical booking practice rarely enforced explicit mix constraints (e.g., new vs review, priority tiers), leading to misalignment between capacity and need—most visibly, very long waits for urgent new referrals.
+
+**Problem.** How can we re-balance appointment templates—under fixed session supply—to reduce urgent waits without creating unacceptable spill-over to semi-urgent and routine cohorts?
+
+**Why now.** Post-pandemic referrals and priority mix have shifted, and legacy template settings no longer match current demand.
+
+**Objective.** Provide a transparent, reproducible analytics pathway—screening → forecasting → scenario testing—that (i) identifies clinics most in need of reallocation, (ii) quantifies near-term demand versus session supply, and (iii) tests implementable template changes under real rules (e.g., limits on review reductions) to protect continuity of care.
+
+**Intended use.** Support operational planning between clinic leads and schedulers, producing recommendations that can be trialled, monitored, and iterated.
+
+# Introduction
+## Research questions
+1. **Selection.** Which clinics most urgently require template reallocation given current priority mix, new-to-review balance, wait times, and KPI attainment?
+2. **Forecasting.** What is the short-horizon demand profile (weekly, by priority and visit type), and how does it compare with session-based supply?
+3. **Operational change.** Under realistic constraints (e.g., review reduction caps), which template adjustments improve urgent timeliness with minimal spill-over?
+
+## Scope and data
+- **Scope.** Weekly clinic activity (new/review × urgent/semi-urgent/routine); focus on near-term planning and template settings rather than long-run workforce expansion.  
+- **Data.** De-identified internal data for operational runs; a small **public sample** is provided for reproducibility. Both the formal waitlist and **booked-but-not-yet-seen** patients are counted when simulating backlog dynamics.  
+- **Constraints.** Session supply treated as fixed in the short term; review capacity reductions subject to explicit caps to maintain continuity of care.
+
+## Approach overview
+1. **Screening.** Score and rank clinics using priority mix, new:review ratio, throughput, urgent waiting time, and KPI attainment.  
+2. **Forecasting.** Build weekly demand forecasts and derive session-based supply from historical patterns; validate with train–test evaluation and residual checks.  
+3. **Scenario testing.** Apply rule-based reallocation under clinic constraints; simulate wait dynamics and backlog clearance time to compare options.
+
+## Contributions
+- A clear, auditable analytics pathway linking model evidence to actionable template levers.  
+- Implementable recommendations that improve urgent timeliness without material spill-over, plus a monitoring plan for ongoing refinement.
+
+# Methods
+## Screening (FY2025 Urology)
+
+Because there are **26 clinics** under Urology, we first conduct a cross-clinic screening to identify **which clinics most urgently require template reallocation**. The aim is to compare priority mix, new–review balance, and timeliness (urgent wait & KPI attainment), then shortlist clinics for deeper forecasting and scenario testing.
+
+
+```{r screening-setup, include=FALSE}
+
+
+# ---- Parameters ----
+year_target <- 2025
+in_file     <- "data/appointments_urology_fy2025.csv"
+save_dir    <- "charts_fy2025_urology"
+dir.create(save_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ---- Helpers ----
+first_existing_name <- function(df, candidates) {
+  hits <- intersect(candidates, names(df))
+  if (length(hits) == 0) return(NA_character_)
+  hits[1]
+}
+col_or_na <- function(df, nm, default = NA) {
+  if (!is.na(nm) && nm %in% names(df)) df[[nm]] else default
+}
+
+# ---- Load raw CSV ----
+df_raw <- read_csv(in_file, show_col_types = FALSE)
+
+# ---- Identify columns (robust to different exports) ----
+clinic_name_col <- first_existing_name(df_raw, c("ClinicName","AppointmentClinicName","AppointmentClinic","LocationName"))
+clinic_code_col <- first_existing_name(df_raw, c("ClinicCode","SourceLocationCode","AppointmentClinicLocationCode"))
+urgency_col     <- first_existing_name(df_raw, c("Urgency","ReferralPriorityRefId","AppointmentUrgency"))
+
+# Optional flags that may or may not exist
+new_att_col     <- first_existing_name(df_raw, c("NewAttended","IsNewAttended"))
+rev_att_col     <- first_existing_name(df_raw, c("ReviewAttended","IsReviewAttended"))
+appt_type_col   <- first_existing_name(df_raw, c("AppointmentTypeRefId"))
+first_att_col   <- first_existing_name(df_raw, c("FirstAttendedAppointment","IsFirstAttended"))
+wait_days_col   <- first_existing_name(df_raw, c("DaysReferralReceivedToFirstAttendedAppointment","DaysRefRecToFirstAtt"))
+
+# ---- Harmonise & build analysis frame ----
+df_work <- df_raw %>%
+  mutate(
+    ClinicName_ = col_or_na(df_raw, clinic_name_col, NA_character_),
+    ClinicCode_ = col_or_na(df_raw, clinic_code_col, NA_character_),
+    Urgency_    = suppressWarnings(as.numeric(col_or_na(df_raw, urgency_col, NA_real_))),
+
+    clinic_lab = dplyr::case_when(
+      !is.na(ClinicCode_) & ClinicCode_ != "" ~ ClinicCode_,
+      !is.na(ClinicName_) & ClinicName_ != "" ~ ClinicName_,
+      TRUE ~ "Unknown clinic"
+    ),
+
+    priority = dplyr::case_when(
+      Urgency_ == 1 ~ "Urgent",
+      Urgency_ == 2 ~ "Semi-urgent",
+      Urgency_ == 3 ~ "Routine",
+      TRUE          ~ NA_character_
+    ) |> factor(levels = c("Urgent","Semi-urgent","Routine")),
+
+    # New vs Review (robust fallbacks)
+    NewAttended_    = suppressWarnings(as.integer(col_or_na(df_raw, new_att_col, NA_integer_))),
+    ReviewAttended_ = suppressWarnings(as.integer(col_or_na(df_raw, rev_att_col, NA_integer_))),
+    ApptTypeRefId_  = suppressWarnings(as.integer(col_or_na(df_raw, appt_type_col, NA_integer_))),
+    FirstAttended_  = suppressWarnings(as.integer(col_or_na(df_raw, first_att_col, NA_integer_))),
+    WaitDays_       = suppressWarnings(as.numeric(col_or_na(df_raw, wait_days_col, NA_real_))),
+
+    new_review = dplyr::case_when(
+      !is.na(NewAttended_)    & NewAttended_    == 1 ~ "New",
+      !is.na(ReviewAttended_) & ReviewAttended_ == 1 ~ "Review",
+      !is.na(FirstAttended_)  & FirstAttended_  == 1 ~ "New",     # fallback
+      !is.na(ApptTypeRefId_)  & ApptTypeRefId_  == 1 ~ "New",
+      !is.na(ApptTypeRefId_)  & ApptTypeRefId_  == 2 ~ "Review",
+      TRUE ~ NA_character_
+    ) |> factor(levels = c("New","Review"))
+  ) %>%
+  filter(!is.na(priority), !is.na(new_review))
+
+# Export cleaned dataset (optional deliverable)
+dir.create("data", showWarnings = FALSE, recursive = TRUE)
+write_csv(df_work, "data/appointments_urology_fy2025_clean.csv")
+
+# Common ordering by total attended (for consistent plotting)
+order_tbl <- df_work %>% count(clinic_lab, name = "total_attended") %>% arrange(desc(total_attended))
+clinic_levels <- order_tbl$clinic_lab
+```
+
+### Attended by priority 
+
+Why this matters. From @fig-attended-priority, we see each clinic’s total attended appointments for FY2025 and the distribution by priority. Clinic 2078B has the highest overall volume and a large share classified as Urgent, indicating sustained urgent demand. This combination (high volume + high urgent mix) signals 2078B as a priority candidate for template reallocation to protect timeliness while managing spill-over to other cohorts.
+
+```{r}
+#| label: fig-attended-priority
+#| fig-cap: "FY2025 Urology — Attended by Priority (per clinic)"
+#| fig-alt: "Stacked bar chart of attended appointments by clinic and priority, ordered by total volume."
+#| fig-width: 14
+#| fig-height: 8
+
+label_min <- 15
+
+pri_counts <- df_work %>%
+count(clinic_lab, priority, name = "n") %>%
+mutate(clinic_lab = factor(clinic_lab, levels = clinic_levels)) %>%
+complete(clinic_lab, priority, fill = list(n = 0)) %>%
+mutate(seg_label = ifelse(n >= label_min, scales::comma(n), ""))
+
+pri_totals <- pri_counts %>%
+group_by(clinic_lab) %>% summarise(total = sum(n), .groups = "drop")
+
+plot_pri_counts <- ggplot(pri_counts, aes(x = clinic_lab, y = n, fill = priority)) +
+geom_col(width = 0.85) +
+geom_text(aes(label = seg_label),
+position = position_stack(vjust = 0.5),
+size = 3, color = "black") +
+geom_text(data = pri_totals,
+aes(x = clinic_lab, y = total, label = scales::comma(total)),
+vjust = -0.3, size = 3.2, fontface = "bold", inherit.aes = FALSE) +
+scale_y_continuous(labels = scales::comma) +
+labs(
+title    = paste0("FY", year_target, " Urology — Attended by Priority (per clinic)"),
+subtitle = "Bars ordered by total attended volume (descending).",
+x = NULL, y = "Appointments (attended count)", fill = "Priority"
+) +
+theme_minimal(base_size = 12) +
+theme(axis.text.x = element_text(angle = 70, hjust = 1),
+panel.grid.major.x = element_blank()) +
+expand_limits(y = max(pri_totals$total) * 1.12)
+
+plot_pri_counts
+
+
+```
+
+### New vs Review
+Why this matters. From @fig-newreview, we see each clinic’s attended volume split into New and Review. Without explicit mix rules, a low New share in high-volume clinics can cause urgent-new referrals to queue for long periods.
+
+How to read it. Compare (1) total bar height (throughput) and (2) the New segment. Clinics with large totals but small New segments are prime candidates to rebalance templates toward New—subject to continuity-of-care limits on review reductions.
+
+In FY2025, 2078B shows high throughput but a below-average New share, consistent with its urgent timeliness pressure. This flags 2078B for reallocating capacity toward urgent-new, while keeping review reductions within the agreed cap.
+
+```{r}
+#| label: fig-newreview
+#| fig-cap: "FY2025 Urology — New vs Review (per clinic)"
+#| fig-alt: "Stacked bar chart showing each clinic's attended volume split into New vs Review."
+#| fig-width: 14
+#| fig-height: 8
+#| fig-pos: "H"
+
+label_min <- 15  # show in-segment labels only if n >= 15
+
+nr_counts <- df_work %>%
+dplyr::count(clinic_lab, new_review, name = "n") %>%
+dplyr::mutate(clinic_lab = factor(clinic_lab, levels = clinic_levels)) %>%
+tidyr::complete(clinic_lab, new_review, fill = list(n = 0)) %>%
+dplyr::mutate(seg_label = ifelse(n >= label_min, scales::comma(n), ""))
+
+nr_totals <- nr_counts %>%
+dplyr::group_by(clinic_lab) %>%
+dplyr::summarise(total = sum(n), .groups = "drop")
+
+plot_nr_counts <- ggplot2::ggplot(nr_counts, ggplot2::aes(x = clinic_lab, y = n, fill = new_review)) +
+ggplot2::geom_col(width = 0.85) +
+
+# in-segment labels
+
+ggplot2::geom_text(
+ggplot2::aes(label = seg_label),
+position = ggplot2::position_stack(vjust = 0.5),
+size = 3, color = "black"
+) +
+
+# total on top of bars
+
+ggplot2::geom_text(
+data = nr_totals,
+ggplot2::aes(x = clinic_lab, y = total, label = scales::comma(total)),
+vjust = -0.3, size = 3.2, fontface = "bold", inherit.aes = FALSE
+) +
+ggplot2::scale_y_continuous(labels = scales::comma) +
+ggplot2::scale_fill_manual(values = c("New" = "#1f9e89", "Review" = "#e76f51"), name = "Appt Type") +
+ggplot2::labs(
+title    = paste0("FY", year_target, " Urology — New vs Review (per clinic)"),
+subtitle = "Stacked counts; bars ordered by total attended volume (descending).",
+x = NULL, y = "Appointments (attended count)"
+) +
+ggplot2::theme_minimal(base_size = 12) +
+ggplot2::theme(
+axis.text.x = ggplot2::element_text(angle = 70, hjust = 1),
+panel.grid.major.x = ggplot2::element_blank()
+) +
+ggplot2::expand_limits(y = max(nr_totals$total) * 1.12)
+
+plot_nr_counts
+
+# (Optional) save to file
+
+ggplot2::ggsave(
+filename = file.path(save_dir, paste0("fig2_fy", year_target, "_urology_new_review_counts_by_clinic_labeled.png")),
+plot     = plot_nr_counts, width = 14, height = 8, dpi = 150
+)
+
+```
+
+
+### Urgent first-appointment average wait
+
+
+From **@fig-urgentwait**, we compare clinics by the **average days to first attended appointment** for urgent patients. Higher values indicate timeliness risk. Use this alongside **@fig-attended-priority** and **@fig-newreview** to prioritise clinics for reallocation.
+
+```{r}
+#| label: fig-urgentwait
+#| fig-cap: "FY2025 Urology — Urgent: average wait to first appointment"
+#| fig-alt: "Bar chart of clinics' average days waited for urgent patients' first appointment; dashed line shows overall average."
+#| fig-width: 12
+#| fig-height: 8
+#| fig-pos: "H"
+
+min_urgent_n <- 10
+has_first_flag <- "FirstAttended_" %in% names(df_work)
+
+urgent_wait <- df_work %>%
+dplyr::filter(priority == "Urgent") %>%
+{ if (has_first_flag) dplyr::filter(., FirstAttended_ == 1) else dplyr::filter(., !is.na(WaitDays_)) } %>%
+dplyr::filter(!is.na(WaitDays_)) %>%
+dplyr::group_by(clinic_lab) %>%
+dplyr::summarise(n_urgent_first = dplyr::n(),
+avg_wait_days  = mean(WaitDays_, na.rm = TRUE),
+.groups = "drop") %>%
+dplyr::filter(n_urgent_first >= min_urgent_n) %>%
+dplyr::mutate(clinic_lab = forcats::fct_reorder(clinic_lab, avg_wait_days, .desc = TRUE),
+bar_label  = sprintf("%.1f d (n=%d)", avg_wait_days, n_urgent_first))
+
+overall_avg_urgent <- df_work %>%
+dplyr::filter(priority == "Urgent", !is.na(WaitDays_)) %>%
+{ if (has_first_flag) dplyr::filter(., FirstAttended_ == 1) else . } %>%
+dplyr::summarise(overall = mean(WaitDays_, na.rm = TRUE)) %>%
+dplyr::pull(overall)
+
+top_row <- levels(urgent_wait$clinic_lab)[1]
+
+p_wait_urgent <- ggplot2::ggplot(urgent_wait, ggplot2::aes(x = clinic_lab, y = avg_wait_days)) +
+ggplot2::geom_col(fill = "#a6cee3", color = "#4f81bd", width = 0.65) +
+ggplot2::geom_text(ggplot2::aes(label = bar_label), hjust = -0.10, size = 3.4, color = "black") +
+ggplot2::geom_hline(yintercept = overall_avg_urgent, linetype = "dashed", linewidth = 0.6, color = "grey35") +
+ggplot2::annotate("label", x = top_row, y = overall_avg_urgent,
+label = sprintf("Overall avg = %.1f d", overall_avg_urgent),
+hjust = -0.10, vjust = -0.8, size = 3.2, fill = "white", label.size = 0.2) +
+ggplot2::coord_flip(clip = "off") +
+ggplot2::scale_y_continuous(labels = scales::comma) +
+ggplot2::labs(x = NULL, y = "Average days to first appointment (Urgent)") +
+ggplot2::theme_minimal(base_size = 12) +
+ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(),
+plot.margin = ggplot2::margin(10, 40, 10, 10)) +
+ggplot2::expand_limits(y = max(c(urgent_wait$avg_wait_days, overall_avg_urgent)) * 1.15)
+
+p_wait_urgent
+
+```
+
+### KPI — Urgent 30d vs Routine 365d (focus clinics)
+Building on the three screening signals, we shortlisted eight higher-risk clinics for KPI analysis.
+In @fig-04-kpi-diverging, the Urgent KPI is defined as “seen within 30 days,” and the Routine KPI as “seen within 365 days.” We observe that the two highest-volume clinics—2078B and MURCONP—sit well below the service-wide average on both KPIs, effectively pulling the overall benchmarks down. This reinforces our earlier screening and confirms 2078B as the top priority for template reallocation and operational improvement.
+
+```{r}
+#| label: fig-04-kpi-diverging
+#| fig-cap: "FY2025 Urology — KPI: Urgent 30d vs Routine 365d (focus clinics)"
+#| fig-alt: "Diverging bar chart: left shows Urgent 30-day KPI (as negative), right shows Routine 365-day KPI (as positive), with overall and focus averages."
+#| fig-width: 12
+#| fig-height: 8
+#| fig-pos: "H"
+
+# ---- focus clinics (edit if needed) ----
+
+focus_clinics <- c("2078B","MURCONP","BUSTONM","MURBONP","2017B","BURCALP","368M","MURONCP")
+
+# ---- pick explicit KPI columns if present; else derive ----
+
+first_existing_name <- function(df, candidates) {
+hits <- intersect(candidates, names(df))
+if (length(hits) == 0) return(NA_character_)
+hits[1]
+}
+
+urg_seen30_col <- first_existing_name(df_work, c("UrgentPatientsSeenWithin30DaysInternal","UrgentSeenWithin30dFlag"))
+urg_den_col    <- first_existing_name(df_work, c("UrgentPatientInternal","UrgentFirstAttendedFlag"))
+rut_seen365_col<- first_existing_name(df_work, c("RoutinePatientsSeenWithin365DaysInternal","RoutineSeenWithin365dFlag"))
+rut_den_col    <- first_existing_name(df_work, c("RoutinePatientInternal","RoutineFirstAttendedFlag"))
+
+derive_kpi <- function(df) {
+has_first <- "FirstAttended_" %in% names(df)
+d_urg <- df %>%
+dplyr::filter(priority == "Urgent") %>%
+{ if (has_first) dplyr::filter(., FirstAttended_ == 1) else . } %>%
+dplyr::mutate(urg_num = dplyr::if_else(!is.na(WaitDays_) & WaitDays_ <= 30, 1L, 0L),
+urg_den = dplyr::if_else(!is.na(WaitDays_), 1L, 0L)) %>%
+dplyr::group_by(clinic_lab) %>% dplyr::summarise(urg_num = sum(urg_num), urg_den = sum(urg_den), .groups = "drop")
+d_rut <- df %>%
+dplyr::filter(priority == "Routine") %>%
+{ if (has_first) dplyr::filter(., FirstAttended_ == 1) else . } %>%
+dplyr::mutate(rut_num = dplyr::if_else(!is.na(WaitDays_) & WaitDays_ <= 365, 1L, 0L),
+rut_den = dplyr::if_else(!is.na(WaitDays_), 1L, 0L)) %>%
+dplyr::group_by(clinic_lab) %>% dplyr::summarise(rut_num = sum(rut_num), rut_den = sum(rut_den), .groups = "drop")
+dplyr::full_join(d_urg, d_rut, by = "clinic_lab")
+}
+
+if (!is.na(urg_seen30_col) && !is.na(urg_den_col) && !is.na(rut_seen365_col) && !is.na(rut_den_col)) {
+kpi_all <- df_work %>%
+dplyr::group_by(clinic_lab) %>%
+dplyr::summarise(
+urg_num = sum(dplyr::coalesce(.data[[urg_seen30_col]], 0L), na.rm = TRUE),
+urg_den = sum(dplyr::coalesce(.data[[urg_den_col]],    0L), na.rm = TRUE),
+rut_num = sum(dplyr::coalesce(.data[[rut_seen365_col]],0L), na.rm = TRUE),
+rut_den = sum(dplyr::coalesce(.data[[rut_den_col]],    0L), na.rm = TRUE),
+.groups = "drop"
+)
+} else {
+kpi_all <- derive_kpi(df_work)
+}
+
+# ---- subset to focus clinics & compute percentages ----
+
+kpi_wide <- kpi_all %>%
+dplyr::filter(clinic_lab %in% focus_clinics, urg_den > 0, rut_den > 0) %>%
+dplyr::mutate(
+pct_urgent  = 100 * urg_num / urg_den,
+pct_routine = 100 * rut_num / rut_den
+) %>%
+dplyr::arrange(pct_urgent) %>%
+dplyr::mutate(clinic_flag = factor(clinic_lab, levels = clinic_lab))
+
+# overall averages
+
+overall_urg_all   <- 100 * sum(kpi_all$urg_num, na.rm = TRUE) / sum(kpi_all$urg_den, na.rm = TRUE)
+overall_rut_all   <- 100 * sum(kpi_all$rut_num, na.rm = TRUE) / sum(kpi_all$rut_den, na.rm = TRUE)
+overall_urg_focus <- 100 * sum(kpi_wide$urg_num) / sum(kpi_wide$urg_den)
+overall_rut_focus <- 100 * sum(kpi_wide$rut_num) / sum(kpi_wide$rut_den)
+
+# ---- long form for diverging plot ----
+
+div_long <- kpi_wide %>%
+dplyr::transmute(
+clinic_flag,
+`Urgent 30d`   = -pct_urgent,   # left
+`Routine 365d` =  pct_routine   # right
+) %>%
+tidyr::pivot_longer(-clinic_flag, names_to = "KPI", values_to = "value") %>%
+dplyr::mutate(
+KPI   = factor(KPI, levels = c("Urgent 30d", "Routine 365d")),
+label = paste0(round(abs(value), 1), "%"),
+hjust = ifelse(value < 0, 1.05, -0.05)
+)
+
+x_max <- max(abs(div_long$value),
+overall_urg_all, overall_rut_all,
+overall_urg_focus, overall_rut_focus, na.rm = TRUE)
+x_lim <- ceiling(x_max / 10) * 10 * 1.15
+top_row <- levels(kpi_wide$clinic_flag)[1]
+
+p_div_focus <- ggplot2::ggplot(div_long, ggplot2::aes(y = clinic_flag, x = value, fill = KPI)) +
+ggplot2::geom_col(width = 0.65, color = "grey40") +
+ggplot2::geom_text(ggplot2::aes(label = label), hjust = div_long$hjust, size = 3.0) +
+ggplot2::geom_vline(xintercept = 0, color = "grey40") +
+
+# dashed = ALL clinics
+
+ggplot2::geom_vline(xintercept = -overall_urg_all,  linetype = "dashed",  linewidth = 0.7, color = "#e76f51") +
+ggplot2::geom_vline(xintercept =  overall_rut_all,  linetype = "dashed",  linewidth = 0.7, color = "#2a9d8f") +
+
+# dotted = focus subset
+
+ggplot2::geom_vline(xintercept = -overall_urg_focus, linetype = "dotted", linewidth = 0.7, color = "#e76f51") +
+ggplot2::geom_vline(xintercept =  overall_rut_focus, linetype = "dotted", linewidth = 0.7, color = "#2a9d8f") +
+ggplot2::annotate("label", x = -overall_urg_all,  y = top_row,
+label = sprintf("Urgent overall (ALL) = %.1f%%",  overall_urg_all),
+hjust = 1.05, vjust = -0.8, size = 3.0, fill = "white", label.size = 0.2) +
+ggplot2::annotate("label", x = -overall_urg_focus, y = top_row,
+label = sprintf("Urgent avg (focus) = %.1f%%", overall_urg_focus),
+hjust = 1.05, vjust =  0.6, size = 3.0, fill = "white", label.size = 0.2) +
+ggplot2::annotate("label", x =  overall_rut_all,  y = top_row,
+label = sprintf("Routine overall (ALL) = %.1f%%",  overall_rut_all),
+hjust = -0.05, vjust = -0.8, size = 3.0, fill = "white", label.size = 0.2) +
+ggplot2::annotate("label", x =  overall_rut_focus, y = top_row,
+label = sprintf("Routine avg (focus) = %.1f%%", overall_rut_focus),
+hjust = -0.05, vjust =  0.6, size = 3.0, fill = "white", label.size = 0.2) +
+ggplot2::scale_x_continuous(limits = c(-x_lim, x_lim), labels = function(x) paste0(abs(x), "%")) +
+ggplot2::scale_fill_manual(values = c("Urgent 30d" = "#f4a261", "Routine 365d" = "#2a9d8f")) +
+ggplot2::labs(x = "KPI compliance (%)", y = NULL, fill = NULL) +
+ggplot2::theme_minimal(base_size = 12) +
+ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(),
+plot.margin = ggplot2::margin(10, 40, 10, 10),
+legend.position = "top")
+
+p_div_focus
+
+```
+
+
+## Forecasting — Demand for 2078B
+
+### What we mean by demand
+We define clinic demand as the total appointment capacity required to serve both sources:
+- **External demand:** new referrals arriving to the clinic (from outside).
+- **Internal demand:** the follow-up **review appointments** generated by those new patients over time.
+
+### Planning identity 
+**Total demand = External (new referrals) + Internal (reviews)**  
+= **Total new accepted referrals + (Total new accepted referrals × Review rate × Avg review visits per patient).**
+
+## Forecasting — New referrals for 2078B
+
+### Aim
+Forecast monthly new referrals for clinic **2078B** to quantify the **external** component of demand.
+
+### Data & split
+- **Training:** Jul-2023 … Jun-2025  
+- **Test (hold-out):** Jul-2025 … Sep-2025
+
+### Models
+ARIMA, ETS, TSLM (trend + season), and SNAIVE.
+
+### Evaluation
+
+We split the monthly series into a training window (Jul-2023 to Jun-2025) and a 3-month hold-out test window (Jul-2025 to Sep-2025). Each model (ARIMA, ETS, TSLM, SNAIVE) is fit on the training window and then asked to predict the test months. We compare the predictions against the held-out actuals using MAPE, with RMSE and MAE reported for context. The visual overlay of test-period predictions appears in @fig-overlay-2078B, and the corresponding error summary is in @tbl-errors-2078B.
+
+
+
+```{r}
+#| label: fc-00-setup-2078B
+#| echo: false
+#| warning: false
+#| message: false
+# Minimal, defensive setup for this section.
+# - If ts_2078B / train_ts / test_ts already exist, this chunk does nothing.
+# - Otherwise it builds them from a standard CSV: ClinicCode, MonthStart(yyyy-mm-01), Qty.
+
+if (!exists("ts_2078B") || !exists("train_ts") || !exists("test_ts") || !exists("test_months")) {
+  library(readr); library(dplyr); library(lubridate)
+  library(tsibble); library(fable); library(fabletools)
+
+  data_path <- "data/new_referrals_monthly_by_clinic_2023-07_to_2025-09.csv"
+
+  df <- read_csv(data_path, show_col_types = FALSE)
+
+  ts_all <- df |>
+    mutate(MonthStart = as.Date(MonthStart),
+           Month      = tsibble::yearmonth(MonthStart)) |>
+    select(ClinicCode, Month, Qty) |>
+    arrange(ClinicCode, Month) |>
+    as_tsibble(index = Month, key = ClinicCode)
+
+  ts_2078B <- ts_all |> filter(ClinicCode == "2078B")
+
+  train_end   <- tsibble::yearmonth("2025 Jun")
+  test_months <- tsibble::yearmonth(c("2025 Jul","2025 Aug","2025 Sep"))
+
+  train_ts <- ts_2078B |> filter(Month <= train_end)
+  test_ts  <- ts_2078B |> filter(Month %in% test_months)
+}
+```
+
+```{r}
+#| label: fc-02-compare-2078B
+#| echo: false
+#| warning: false
+#| message: false
+
+# Fit four models on TRAIN and forecast onto TEST; compute hold-out errors.
+
+fits <- fabletools::model(
+train_ts,
+ARIMA  = fable::ARIMA(Qty),
+ETS    = fable::ETS(Qty),
+TSLM   = fable::TSLM(Qty ~ trend() + season()),
+SNAIVE = fable::SNAIVE(Qty)
+)
+
+future_index <- test_ts |>
+tsibble::as_tibble() |>
+dplyr::select(ClinicCode, Month) |>
+dplyr::distinct() |>
+tsibble::as_tsibble(index = Month, key = ClinicCode)
+
+fc3 <- fabletools::forecast(fits, new_data = future_index) |>
+tsibble::as_tibble() |>
+dplyr::transmute(ClinicCode, Month, .model, Forecast = .mean) |>
+dplyr::arrange(.model, Month)
+
+errors_tbl <- fc3 |>
+dplyr::left_join(
+test_ts |> tsibble::as_tibble() |> dplyr::transmute(Month, Actual = Qty),
+by = "Month"
+) |>
+dplyr::mutate(
+AE  = abs(Forecast - Actual),
+SE  = (Forecast - Actual)^2,
+APE = AE / pmax(Actual, 1e-9)
+) |>
+dplyr::group_by(.model) |>
+dplyr::summarise(
+RMSE = sqrt(mean(SE)),
+MAE  = mean(AE),
+MAPE = mean(APE),
+.groups = "drop"
+) |>
+dplyr::arrange(MAPE) |>
+dplyr::mutate(
+dplyr::across(c(RMSE, MAE), ~ round(.x, 3)),
+MAPE = scales::percent(MAPE, accuracy = 0.01)
+)
+
+best_model <- errors_tbl$.model[1]
+
+```
+
+
+
+
+```{r}
+#| label: fig-overlay-2078B
+#| fig-cap: "2078B — New referrals: Actual vs model predictions (Train: 2023-07..2025-06; Test: 2025-07..09). Shaded band marks the hold-out."
+#| fig-alt: "Overlay of actual new referrals and test-period predictions for ARIMA/ETS/TSLM/SNAIVE."
+#| fig-width: 12
+#| fig-height: 7
+#| fig-pos: "H"
+#| warning: false
+#| message: false
+
+library(ggplot2); library(scales)
+
+actual_all <- ts_2078B |> tsibble::as_tibble() |>
+dplyr::transmute(Date = as.Date(Month), Actual = Qty)
+
+plt_cols <- c(ARIMA="#D62728", ETS="#2CA02C", TSLM="#1F77B4", SNAIVE="#9467BD")
+plt_lty  <- c(ARIMA="solid",   ETS="dashed",  TSLM="dotdash", SNAIVE="twodash")
+
+ggplot() +
+annotate("rect",
+xmin = as.Date(min(test_months)), xmax = as.Date(max(test_months)),
+ymin = -Inf, ymax = Inf, alpha = 0.12) +
+geom_line(data = actual_all, aes(Date, Actual), linewidth = 0.9, color = "grey20") +
+geom_line(data = fc3,
+aes(as.Date(Month), Forecast, color = .model, linetype = .model, group = .model),
+linewidth = 1.1) +
+geom_point(data = fc3,
+aes(as.Date(Month), Forecast, color = .model, group = .model), size = 2.8) +
+scale_color_manual(values = plt_cols, name = "Model") +
+scale_linetype_manual(values = plt_lty,  name = "Model") +
+scale_x_date(breaks = "3 months", date_labels = "%Y-%m",
+expand = expansion(mult = c(0.01, 0.03))) +
+scale_y_continuous(labels = label_comma()) +
+labs(x = NULL, y = "Referrals") +
+theme_minimal(base_size = 12) +
+theme(panel.grid.minor = element_blank(),
+legend.position = "top")
+
+```
+
+From @tbl-errors-2078B, SNAIVE attains the lowest MAPE on the Jul–Sep 2025 hold-out, so we adopt SNAIVE as the short-horizon model for external demand.
+
+
+```{r}
+#| label: tbl-errors-2078B
+#| tbl-cap: "Hold-out errors for 2078B (Jul–Sep 2025). Lowest MAPE highlighted."
+#| echo: false
+#| warning: false
+#| message: false
+
+if (!requireNamespace("gt", quietly = TRUE)) {
+errors_tbl
+} else {
+errors_tbl |>
+dplyr::rename(Model = .model) |>
+gt::gt() |>
+gt::tab_style(
+style = gt::cell_fill(color = "#eef7ee"),
+locations = gt::cells_body(rows = Model == !!best_model)
+) 
+}
+
+```
+
+
+```{r}
+#| label: fc-04-project-2078B
+#| echo: false
+#| warning: false
+#| message: false
+
+# Refit the chosen model to data through Sep-2025 and forecast Oct-2025..Jun-2026.
+
+best_model <- as.character(best_model)
+
+train_plus <- ts_2078B |>
+dplyr::filter(Month <= tsibble::yearmonth("2025 Sep"))
+
+if (best_model == "ARIMA") {
+fit_best <- fabletools::model(train_plus, MODEL = fable::ARIMA(Qty))
+} else if (best_model == "ETS") {
+fit_best <- fabletools::model(train_plus, MODEL = fable::ETS(Qty))
+} else if (best_model == "TSLM") {
+fit_best <- fabletools::model(train_plus, MODEL = fable::TSLM(Qty ~ trend() + season()))
+} else {
+fit_best <- fabletools::model(train_plus, MODEL = fable::SNAIVE(Qty))
+}
+
+future_ym <- tsibble::yearmonth(c("2025 Oct","2025 Nov","2025 Dec",
+"2026 Jan","2026 Feb","2026 Mar",
+"2026 Apr","2026 May","2026 Jun"))
+
+future_index <- tibble::tibble(ClinicCode = "2078B", Month = future_ym) |>
+tsibble::as_tsibble(index = Month, key = ClinicCode)
+
+fc_best <- fabletools::forecast(fit_best, new_data = future_index) |>
+tsibble::as_tibble() |>
+dplyr::transmute(ClinicCode, Month, Forecast = .mean, MonthStart = as.Date(Month))
+
+# External FY2026 = actual Jul–Sep 2025 + forecast Oct–Jun
+
+fy26_jas <- tsibble::yearmonth(c("2025 Jul","2025 Aug","2025 Sep"))
+sum_actual_jas  <- ts_2078B |>
+dplyr::filter(Month %in% fy26_jas) |>
+dplyr::summarise(total = sum(Qty, na.rm = TRUE)) |>
+dplyr::pull(total)
+
+sum_fc_oct_jun  <- fc_best |>
+dplyr::summarise(total = sum(Forecast, na.rm = TRUE)) |>
+dplyr::pull(total)
+
+fy2026_total_external <- sum_actual_jas + sum_fc_oct_jun
+
+```
+
+```{r}
+#| label: fig-proj-2078B
+#| fig-cap: "2078B — Actual through Sep-2025 and forecast (chosen model) to Jun-2026."
+#| fig-alt: "Line chart with actuals to Sep-2025 and chosen-model forecast to Jun-2026."
+#| fig-width: 12
+#| fig-height: 7
+#| fig-pos: "H"
+#| warning: false
+#| message: false
+
+
+act_plot <- ts_2078B |>
+dplyr::filter(Month >= tsibble::yearmonth("2023 Jul"),
+Month <= tsibble::yearmonth("2025 Sep")) |>
+tsibble::as_tibble() |>
+dplyr::transmute(MonthStart = as.Date(Month), Value = Qty, Type = "Actual")
+
+fc_plot <- fc_best |>
+dplyr::transmute(MonthStart, Value = Forecast, Type = "Forecast")
+
+plot_df <- dplyr::bind_rows(act_plot, fc_plot)
+
+last_actual <- act_plot |> dplyr::arrange(MonthStart) |> dplyr::slice_tail(n = 1)
+first_fc    <- fc_plot  |> dplyr::arrange(MonthStart) |> dplyr::slice_head(n = 1)
+connector   <- dplyr::bind_rows(last_actual, first_fc)
+
+ggplot2::ggplot(plot_df, ggplot2::aes(MonthStart, Value, color = Type, linetype = Type)) +
+ggplot2::geom_line(linewidth = 1) +
+ggplot2::geom_line(data = connector, ggplot2::aes(MonthStart, Value),
+inherit.aes = FALSE, color = "#1F77B4", linetype = "dotted", linewidth = 0.8) +
+ggplot2::geom_vline(xintercept = as.Date("2025-10-01"), linetype = "dotted") +
+ggplot2::scale_color_manual(values = c(Actual = "grey20", Forecast = "#1F77B4")) +
+ggplot2::scale_linetype_manual(values = c(Actual = "solid", Forecast = "dashed")) +
+ggplot2::scale_x_date(breaks = "3 months", date_labels = "%Y-%m",
+expand = ggplot2::expansion(mult = c(0.01, 0.03))) +
+ggplot2::scale_y_continuous(labels = scales::label_comma()) +
+ggplot2::labs(
+title = paste0("Chosen model: ", best_model),
+x = NULL, y = "Referrals", color = NULL, linetype = NULL
+) +
+ggplot2::theme_minimal(base_size = 12) +
+ggplot2::theme(panel.grid.minor = element_blank(),
+legend.position = "top")
+
+```
+
+For clinic 2078B, we estimate the external component of FY2026 demand by combining observed and forecast volumes over the fiscal horizon. First, we aggregate the actual accepted new referrals for the three months already completed in FY2026—July to September 2025—which total 461. Next, we project the remaining nine months of FY2026 October 2025 through June 2026 using the model that achieved the lowest hold-out error, yielding a forecast of 1186 accepted new referrals across that period. Adding these two components produces an FY2026 external-new total of 1647. 
+
+```{r}
+#| label: tbl-fy2026-2078B-final
+#| tbl-cap: "2078B — FY2026 external (new) demand: Jul–Sep 2025 actual + Oct–Jun 2026 forecast (single row)."
+#| echo: false
+#| warning: false
+#| message: false
+
+one_row <- tibble::tibble(
+ClinicCode          = "2078B",
+`Actual Jul–Sep 2025`      = 461L,   # 165 + 162 + 134
+`Forecast Oct 2025–Jun 2026` = 1186L,
+`FY2026 Total`             = 1647L
+)
+
+if (requireNamespace("gt", quietly = TRUE)) {
+one_row |>
+gt::gt()
+} else if (requireNamespace("knitr", quietly = TRUE)) {
+knitr::kable(one_row, align = "lrrr")
+} else {
+one_row
+}
+
+
+```
+
+
+
+This arithmetic is consistent with the planning identity used throughout the report and ensures that near-term realities are respected while still providing a full-year view.
+
+### Translating external referrals to total demand
+
+From FY2023–FY2025 (closed) data we observe:  
+- **Review rate (r):** 35% of referrals require at least one review visit.  
+- **Average review visits per reviewed patient (excluding the first):** **1.54**  
+
+**Substituting values**  
+- `External demand = 1647`  
+- `Internal demand = 1647 * 0.35 * 1.54 = 887.73`  
+- `Total Demand = 1647 + 887.73 = 2534.73`  
+  **≈ 2,535 appointment slots**  
+
+Under these assumptions, Clinic **2078B** requires about **2,535 appointment slots** in FY2026: **1,647** for first visits and **888** for review visits.
+
+
+
+
+
+```{r}
+#| label: demand-priority-2078B
+#| echo: false
+#| warning: false
+#| message: false
+#| results: 'asis'
+
+suppressPackageStartupMessages({
+library(tibble); library(dplyr); library(glue); library(scales); library(knitr)
+})
+
+# ---- Inputs (easy to change) ----
+
+N_external   <- 1647      # FY2026 new referrals (external)
+review_rate  <- 0.35      # share needing any review
+avg_reviews  <- 1.54      # avg number of review visits per reviewed patient (excludes first visit)
+weeks_year   <- 52
+
+# Priority mix from FY2023–FY2025 (fixed here; replace if you compute it upstream)
+
+shares <- c(Urgent = 0.542, `Semi-urgent` = 0.341, Routine = 0.117)
+
+# ---- Calculations ----
+
+total_review   <- N_external * review_rate * avg_reviews
+total_demand   <- N_external + total_review
+wk_overall     <- total_demand / weeks_year
+
+new_wk    <- (N_external  / weeks_year) * shares
+review_wk <- (total_review / weeks_year) * shares
+total_wk  <- new_wk + review_wk
+
+# ---- Narrative (printed as Markdown) ----
+
+txt <- glue(
+"Using FY2023–FY2025 priority mix for 2078B: ",
+"**Urgent {percent(shares['Urgent'], 0.1)}**, ",
+"**Semi-urgent {percent(shares['Semi-urgent'], 0.1)}**, ",
+"**Routine {percent(shares['Routine'], 0.1)}**.  \n",
+"With **Total Demand = {comma(round(total_demand))} slots** in FY2026, ",
+"that is about **{round(wk_overall)} slots/week** overall.  \n",
+"Combined weekly by priority ≈ ",
+"**Urgent {round(total_wk['Urgent'])}/wk**, ",
+"**Semi-urgent {round(total_wk['Semi-urgent'])}/wk**, ",
+"**Routine {round(total_wk['Routine'])}/wk**.  \n",
+"Broken down into **New** vs **Review**:"
+)
+knitr::asis_output(txt)
+
+# ---- Two-row table (New / Review) ----
+
+fmt_wk <- function(x) paste0(round(x), " / wk")
+tbl <- tibble(
+` `                   = c("New", "Review"),
+`Urgent (54.2%)`      = c(fmt_wk(new_wk["Urgent"]),      fmt_wk(review_wk["Urgent"])),
+`Semi-urgent (34.1%)` = c(fmt_wk(new_wk["Semi-urgent"]), fmt_wk(review_wk["Semi-urgent"])),
+`Routine (11.7%)`     = c(fmt_wk(new_wk["Routine"]),     fmt_wk(review_wk["Routine"]))
+)
+
+# Prefer gt if you like; kable is simpler and has no extra dependency
+
+kable(tbl, align = "lccc")
+
+
+```
+
+
+## Scenario / Reallocation
+
+# Results
+## Demand–Supply Findings
+## Scenario Outcomes
+
+# Discussion
+(Add interpretation and operational implications.)
+
+# Conclusion
+(Summarise recommendations and expected impact.)
+
+# Limitations & Future Work
+(List data/method limits and next steps.)
+
+# References
+(Add citations.)
+
+
