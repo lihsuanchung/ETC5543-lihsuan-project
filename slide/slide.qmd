@@ -1,0 +1,214 @@
+---
+title: "Appointment Optimisation for Urgent-in-Time Model of Care"
+subtitle: "Monash Health — Business Intelligence Team"
+author:
+  - name: "Li-Hsuan Chung"
+    roles: ["Presenter"]
+  - name: "Supervisor: Andrea Jackson"
+date: "2025-10-21"
+format:
+  presentation-revealjs:
+    math: mathjax
+    slide-number: true
+    incremental: true
+    navigation: true
+    title-slide-attributes:
+      class: small-title 
+execute:
+  echo: false
+---
+
+
+## Problem Statement
+
+- **Excess demand:** Urology clinics are overloaded; **Urgent New** referrals frequently miss the **30-day** first-appointment target, increasing clinical risk.
+
+- **Fixed capacity:** Total sessions **cannot increase** in the short term—improvement must come from **reallocating existing capacity**.
+
+## How we pick the deep-dive clinic
+
+- **Signals used (FY2025):**
+  1) **Priority mix** — Urgent / Semi-urgent / Routine
+  2) **New-to-Review ratio**  
+  3) **Clinic volume** 
+  4) **Urgent New first-appointment wait** (days)
+  5) **KPI** — Urgent ≤ **30 days**
+- Goal: find the **highest-need** clinic for reallocation analysis.
+
+## Signal 1 — Priority mix
+![](figs/urol_priority_mix_by_clinic.png){width=95% fig-align="center"}
+
+**Takeaway:** 2078B is among the **largest** clinics by attended volume, with a **large urgent load**.  
+
+
+## Signal 2 — New vs Review 
+![](figs/urol_new_vs_review_by_clinic.png){width=95% fig-align="center"}
+
+**Takeaway:** 2078B shows a **high Review share** relative to New, which **constrains urgent access**.  
+
+## Signal 3 — Urgent 1st-appointment wait {style="font-size:1.8rem; line-height:1.2"}
+![](figs/urol_urgent_avg_wait_days.png){width=95% fig-align="center"}
+**Takeaway:** 2078B’s **Urgent New** average wait is **well above the overall mean** (dashed line).  
+
+## Signal 4 — KPI compliance
+![](figs/urol_kpi_urgent_routine.png){width=95% fig-align="center"}
+**Takeaway:** 2078B’s **Urgent 30-day KPI** is **Low** 
+
+## Workflow  {.h2-sm .smaller}
+
+
+- **Demand** = **External demand** (New referrals) + **Internal demand** (Reviews)  
+
+- **Supply** = **Average attended appointments per week**  
+
+-  Applying the LP under constraints
+-  Produce **four weekly allocation scenarios** — **UN cap ≤ 17/18/19/20** — across 6 classes.
+
+```{mermaid}
+flowchart LR
+  A["Clinic selected (2078B)      "]
+  B["Compute Demand     "]
+  C["Compute Supply     "]
+  D["Solve LP allocation      "]
+  E["Outputs: weekly Allocated      "]
+
+  A --> B
+  A --> C
+  B --> D
+  C --> D
+  D --> E
+
+classDef node fill:#f8f9fa,stroke:#bbb,rx:10,ry:10;
+class A,B,C,D,E node;
+```
+
+
+
+## Total Demand — FY2026
+
+**Definition:**  
+Total Demand
+= **New Accepted Referrals** + **New Accepted Referrals × Review Rate × Avg. Review Visits**
+
+- **New referrals = 1,647** (sNaive forecast)<br>
+- **Review rate = 35%**  <br>
+- **Avg. review visits = 2.54**
+
+
+- Reviews ≈ 1,647 × 0.35 × 1.54 = **~888**  
+- **Total Demand ≈ 1,647 + 888 = 2,535 (~49 per week)**
+
+
+
+
+
+
+
+## Weekly Demand by Priority  {.h2-sm .smaller}
+
+**Average total demand ≈ 49 patients/week.**  
+We split this across classes **in proportion to referral mix** (Urgent 54%, Semi-urgent 34%, Routine 11%), and by **New vs Review**.
+
+|               | **Urgent (54%)** | **Semi-urgent (34%)** | **Routine (11%)** | **Total** |
+|---            |---:|---:|---:|---:|
+| **New**       | **<span style="color:#d00000">17</span>** | **11** | **4** | **32** |
+| **Review**    | **9** | **6** | **2** | **17** |
+| **Total**     | **26** | **17** | **6** | **49** |
+
+
+
+## Supply — current template usage {.h2-sm .smaller}
+
+::: columns
+::: {.column width="56%"}
+**Weekly average by type — 2078B**
+
+|             | Urgent | Semi-urgent | Routine | **Total** |
+|---          |---:|---:|---:|---:|
+| **New**     | **8.4/wk** | 1.4/wk | 0.1/wk | **9.9/wk** |
+| **Review**  | 16.6/wk    | 10.5/wk | 2.4/wk | **29.5/wk** |
+:::
+::: {.column width="44%"}
+![](figs/weekly_avg_by_type_2078B.png){width=100% fig-align="right"}
+:::
+:::
+
+Average appointments **39/wk** .<br>
+New + Urgent receives only **8.4/wk**, far short of the **17/wk** demand.<br>
+
+
+
+## Allocation Goal & Method {.h2-sm .smaller}
+
+**Goal:** <br>
+Allocate a **fixed weekly capacity** across six classes (New/Review × Urgent/Semi/Routine) to **maximise service value** while protecting urgent access and fairness targets.
+
+
+**Objective: $\displaystyle \max \sum_{k} w_k\, x_k$**
+
+- **Symbols & what each class means**
+- $w_k$: class weights — **UN=6, URev=5, SN=4, SRev=3, RN=2, RRev=1**.
+- **UN** = Urgent New,   **URev** = Urgent Review
+- **SN** = Semi-urgent New,   **SRev** = Semi-urgent Review
+- **RN** = Routine New,   **RRev** = Routine Review
+
+- $x_k$: weekly slots for class $k \in \{\text{UN},\text{URev},\text{SN},\text{SRev},\text{RN},\text{RRev}\}$.
+
+
+
+
+## Constraints {.h2-sm .smaller}
+
+1. **Capacity (weekly supply)**  
+   $\displaystyle \sum_{k} x_k \le S \quad (S=\mathbf{39})$
+
+2. **Scenario cap — Urgent & New**  
+   $\displaystyle x_{\text{UN}} \le q,\quad q\in\{17,18,19,20\}$
+
+3. **Fairness floors (minimum weekly access)**  
+   $\displaystyle x_{\text{SN}}\ge6,\; x_{\text{SRev}}\ge3,\; x_{\text{RN}}\ge2,\; x_{\text{RRev}}\ge1$
+
+4. **Operational & feasibility**  
+   $\displaystyle x_k \ge 0$  
+   Same-day release of **unused urgent** slots is retained.
+   
+## Allocation result {.h2-sm .smaller}
+
+![](figs/allocation_result.png){width=55% fig-align="center"}
+
+**Scenarios:** **Urgent New cap ≤ 17 / 18 / 19 / 20**
+
+**What the chart shows**<br>
+- For each scenario, weekly **Allocated** slots vs **Unmet** inflow.
+
+
+## Result — backlog simulation {.h2-sm .smaller}
+
+![](figs/result.png){width=70% fig-align="center"}
+
+**Simulation setup**  
+After adding the **current waiting list + planned reviews** as the initial stock, we simulate **10 years** of backlog under each scenario using the same inflows and LP allocations.
+
+## Result — backlog simulation {.h2-sm .smaller}
+![](figs/result2.png){width=75% fig-align="center"}
+
+**Result**<br>
+- As **Urgent New (UN)** weekly cap increases, the **UN backlog declines faster**.<br>
+- However, after **UN <= 19**, the **Urgent Review (URev)** backlog **rises sharply**.
+
+## Contribution {.h2-sm .smaller}
+
+**Analytical**<br>
+- Found clinics with urgent access needs.<br>
+- Built **demand forecast** and **supply model** .<br>
+- Developed a **capacity reallocation LP** with **constraints**.
+
+**Decision support**<br>
+- **Scenario results** (UN ≤ 17/18/19/20) with **Allocated vs Unmet** and **10-year backlog** simulation.<br>
+- **Actionable recommendation:** **UN = 18/week** for 2078B
+
+**Future work**<br>
+- Add **unmet-demand penalties** to the LP so the model discourages backlog.<br>
+- Work with clinic schedulers to apply the recommended settings in real rosters.
+
+
