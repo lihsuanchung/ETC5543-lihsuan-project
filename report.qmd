@@ -7,9 +7,12 @@ format:
     pdf-engine: lualatex
     number-sections: true
     keep-tex: false
+    include-in-header:
+      text: |
+        \usepackage{amsmath,amssymb,mathtools}
 execute:
-  cache: true
-  freeze: auto
+  cache: false
+  freeze: false
 ---
 
 ```{r setup-screening, include=FALSE}
@@ -25,47 +28,59 @@ library(lubridate)
 
 # Global options
 knitr::opts_chunk$set(echo = FALSE,message = FALSE, warning = FALSE, fig.align = "center")
-```
-# Abstract {.unnumbered}
-Specialist clinics face sustained demand pressure, long urgent waits and limited clinician time. Because session supply cannot be expanded meaningfully in the short term, we cannot rely on “adding more clinics” to fix timeliness. This project develops a reproducible decision pipeline to optimise appointment templates under the Urgent in Time Model of Care by reallocating capacity within existing sessions. The workflow combines transparent clinic screening, short-term demand forecasting, and scenario testing with pragmatic capacity-reallocation rules that respect real constraints.
 
-Using de-identified internal data (and a small public sample for reproducibility), we construct weekly activity by priority and contrast demand with session-based supply to reveal actionable gaps. Historically, clinics did not enforce mix constraints for new vs review or by priority, contributing to very long waits for urgent new patients. Simulated template changes rectify this by shifting capacity toward urgent new while safeguarding continuity of care for other cohorts. The recommended template improves urgent timeliness without material spill-over and can be implemented and monitored. The contribution is an auditable end-to-end approach that links model evidence to scheduling levers and a monitoring blueprint to sustain performance.
+
+```
+
+# Abstract {.unnumbered}
+
+Specialist clinics are under pressure: demand has grown, urgent patients wait too long, and session time cannot be expanded quickly. This report builds a simple and repeatable way to adjust appointment templates so we use the sessions we already have more effectively. The pipeline is three parts: first we screen all 26 clinics with five signals to find where a change would help the most; next we estimate short-term demand and compare it with typical weekly supply; finally we test a few realistic template settings and show what they mean for waitlists.
+
+Using de-identified data, we reconstruct weekly counts by priority and visit type, then run scenario tests that lift access for urgent new patients while still protecting reviews. For clinic 2078B we show three options: keep urgent new at seventeen per week, lift it to nineteen, or lift it to twenty-four. We simulate backlog paths for three hundred weeks starting from the current waitlist. The results are clear: the first option holds steady but does not reduce the urgent list, the second clears it in roughly four years with moderate pressure on semi-urgent and routine, and the third clears it in about fifteen months but needs extra care to avoid spill-over. The outcome is a set of decisions the clinic can actually use, plus a simple way to monitor progress and adjust settings over time.
 
 # Background & Motivation {.unnumbered}
-Public specialist clinics often face more demand than available clinician session time. In the short term, session supply is effectively fixed by staffing and roster constraints, so increasing throughput by “adding sessions” is not a viable lever. At the same time, historical booking practice rarely enforced explicit mix constraints (e.g., new vs review, priority tiers), leading to misalignment between capacity and need—most visibly, very long waits for urgent new referrals.
 
-**Problem.** How can we re-balance appointment templates—under fixed session supply—to reduce urgent waits without creating unacceptable spill-over to semi-urgent and routine cohorts?
 
-**Why now.** Post-pandemic referrals and priority mix have shifted, and legacy template settings no longer match current demand.
+Motivation. Public specialist clinics operate with persistent demand that exceeds short-term capacity. Session time is largely fixed by staffing, rosters, rooms, and funding cycles. As a result, throughput cannot be lifted quickly by adding clinics. At the same time, historical booking practice did not enforce clear rules for the mix of new and review visits across priority tiers. This looseness produced a gradual mismatch between capacity and need, most visible in prolonged waits for urgent new referrals. The practical question is not how to create more time in the near term, but how to use the existing time more effectively.
 
-**Objective.** Provide a transparent, reproducible analytics pathway—screening → forecasting → scenario testing—that (i) identifies clinics most in need of reallocation, (ii) quantifies near-term demand versus session supply, and (iii) tests implementable template changes under real rules (e.g., limits on review reductions) to protect continuity of care.
+Research question. How can appointment templates be re-balanced under fixed weekly supply so that urgent waiting times fall, while continuity of care is preserved for semi-urgent and routine cohorts? The study seeks a policy that is operationally feasible, auditable, and explainable to clinical leads and schedulers.
 
-**Intended use.** Support operational planning between clinic leads and schedulers, producing recommendations that can be trialled, monitored, and iterated.
+Context and rationale. Referral volumes and the priority mix have shifted in the post-pandemic period. Legacy templates that once worked now under-serve urgent new patients. Clinics also face external performance expectations around timely access and equity across cohorts. A structured method is needed to identify where reallocation will help most, to quantify near-term pressure on each class, and to test realistic template settings before any change is rolled out.
 
 # Introduction
-## Research questions
-1. **Selection.** Which clinics most urgently require template reallocation given current priority mix, new-to-review balance, wait times, and KPI attainment?
-2. **Forecasting.** What is the short-horizon demand profile (weekly, by priority and visit type), and how does it compare with session-based supply?
-3. **Operational change.** Under realistic constraints (e.g., review reduction caps), which template adjustments improve urgent timeliness with minimal spill-over?
+## Aim and contribution 
+The aim is to provide a transparent, reproducible analytics pathway that decision makers can trust. The contributions are fourfold:
+
+A screening framework that ranks twenty-six clinics using five objective indicators: priority mix, new-to-review balance, demand volume, exposure to urgent waiting-time risk, and recent throughput stability.
+
+Short-term demand estimates that place arrivals next to session-based supply, highlighting actionable gaps by class.
+
+A simple optimisation that maximises weighted service subject to real operational rules, including fixed capacity and floors for reviews to protect continuity.
+
+Scenario tests that translate model outputs into options, with clear timelines for urgent clearance and a view of spill-over to semi-urgent and routine.
 
 ## Scope and data
-- **Scope.** Weekly clinic activity (new/review × urgent/semi-urgent/routine); focus on near-term planning and template settings rather than long-run workforce expansion.  
-- **Data.** De-identified internal data for operational runs; a small **public sample** is provided for reproducibility. Both the formal waitlist and **booked-but-not-yet-seen** patients are counted when simulating backlog dynamics.  
-- **Constraints.** Session supply treated as fixed in the short term; review capacity reductions subject to explicit caps to maintain continuity of care.
+
+The analysis focuses on weekly templates at the clinic level rather than individual clinicians or sessions. Results are intended to support operational planning conversations. The outputs describe what can be achieved with current session supply and how different settings trade urgent gains against pressure on other cohorts. The scenarios are designed to be implemented in the booking system and monitored over time.
 
 ## Approach overview
-1. **Screening.** Score and rank clinics using priority mix, new:review ratio, throughput, urgent waiting time, and KPI attainment.  
-2. **Forecasting.** Build weekly demand forecasts and derive session-based supply from historical patterns; validate with train–test evaluation and residual checks.  
-3. **Scenario testing.** Apply rule-based reallocation under clinic constraints; simulate wait dynamics and backlog clearance time to compare options.
+
+The workflow proceeds in three stages. First, screening identifies clinics where a change in the template mix is most likely to yield measurable improvement. Second, near-term arrivals are reconstructed by priority and visit type and are compared with typical weekly supply to quantify the gap. Third, three template settings are tested by simulation over three hundred weeks starting from the current waitlist. The study reports urgent clearance times, the direction of change for semi-urgent and routine, and a plain recommendation that links model evidence to a policy choice.
+
 
 ## Contributions
-- A clear, auditable analytics pathway linking model evidence to actionable template levers.  
-- Implementable recommendations that improve urgent timeliness without material spill-over, plus a monitoring plan for ongoing refinement.
+
+Built three policy scenarios based on the Consulting Team’s requirements and constraints, then used the current waitlist as Week 0 to simulate 300 weeks and compare outcomes.
+
+For each scenario, reported time to clear Urgent New (UN) and quantified the spill-over on Semi-urgent and Routine so trade-offs are explicit and decision-ready.
+
+Provided a clear, auditable pathway from data to template settings, with recommendations that can be implemented and monitored for ongoing refinement.
 
 # Methods
-## Screening (FY2025 Urology)
 
-Because there are **26 clinics** under Urology, we first conduct a cross-clinic screening to identify **which clinics most urgently require template reallocation**. The aim is to compare priority mix, new–review balance, and timeliness (urgent wait & KPI attainment), then shortlist clinics for deeper forecasting and scenario testing.
+## Cross-clinic screening (26 clinics)
+
+Because there are 26 clinics within Urology, we begin with a portfolio-level screening to identify where a change in the appointment template would produce the largest impact. The screening compares clinics on a common set of signals that capture both case mix and timeliness risk. Specifically, we examine the priority mix across urgent, semi-urgent, and routine cohorts; the balance between new and review visits as a proxy for continuity of care; and timeliness indicators that reflect urgent waiting exposure and progress against KPIs. Looking across clinics on the same scale allows us to separate structural differences from noise and to focus attention on clinics where demand pressure is both large and persistent. The outcome is a short list of clinics that merit detailed forecasting and scenario testing, ensuring that subsequent modelling effort is directed to the parts of the system where reallocation is most likely to improve access.
 
 
 ```{r screening-setup, include=FALSE}
@@ -149,9 +164,21 @@ order_tbl <- df_work %>% count(clinic_lab, name = "total_attended") %>% arrange(
 clinic_levels <- order_tbl$clinic_lab
 ```
 
+\newpage
+
 ### Attended by priority 
 
-Why this matters. From @fig-attended-priority, we see each clinic’s total attended appointments for FY2025 and the distribution by priority. Clinic 2078B has the highest overall volume and a large share classified as Urgent, indicating sustained urgent demand. This combination (high volume + high urgent mix) signals 2078B as a priority candidate for template reallocation to protect timeliness while managing spill-over to other cohorts.
+#### What the figure shows
+
+Figure @fig-attended-priority reports FY2025 attended volume by clinic with the distribution across urgent, semi-urgent, and routine. Clinic 2078B exhibits the largest throughput and an unusually high urgent share, signalling sustained urgent demand rather than a transient surge.
+
+#### Interpretation
+
+The joint pattern of high scale and high urgent mix is a known risk for access: if the template does not reserve sufficient first-visit capacity for urgent patients, queuing and prolonged waits are the predictable result.
+
+#### Action
+
+Prioritise 2078B for template reallocation. Increase protected capacity for urgent new patients to relieve immediate timeliness pressure, while calibrating safeguards so that semi-urgent and routine follow-ups remain adequately served.
 
 ```{r}
 #| label: fig-attended-priority
@@ -159,6 +186,7 @@ Why this matters. From @fig-attended-priority, we see each clinic’s total atte
 #| fig-alt: "Stacked bar chart of attended appointments by clinic and priority, ordered by total volume."
 #| fig-width: 14
 #| fig-height: 8
+#| fig-pos: "H"
 
 label_min <- 15
 
@@ -195,12 +223,20 @@ plot_pri_counts
 
 ```
 
+\newpage
+
 ### New vs Review
-Why this matters. From @fig-newreview, we see each clinic’s attended volume split into New and Review. Without explicit mix rules, a low New share in high-volume clinics can cause urgent-new referrals to queue for long periods.
+#### Why this matters
 
-How to read it. Compare (1) total bar height (throughput) and (2) the New segment. Clinics with large totals but small New segments are prime candidates to rebalance templates toward New—subject to continuity-of-care limits on review reductions.
+Figure @fig-newreview shows attended activity by clinic, split into New and Review. When New is persistently under-allocated in high-volume clinics, urgent new referrals accumulate and first-appointment waits lengthen. The aim is to detect this structural imbalance early and target clinics for template reallocation.
 
-In FY2025, 2078B shows high throughput but a below-average New share, consistent with its urgent timeliness pressure. This flags 2078B for reallocating capacity toward urgent-new, while keeping review reductions within the agreed cap.
+#### How to read it
+
+Use two signals: total bar height for throughput, and the New segment for first-visit capacity. Large totals with a small New segment indicate scope to shift capacity toward New while protecting continuity of care for follow-ups.
+
+#### FY2025 evidence and action
+
+Clinic 2078B combines high throughput with a below-average New share in FY2025. This pattern aligns with pressure on urgent first-visit timeliness. Prioritise 2078B for a controlled shift toward urgent new appointments, with Review reductions kept within the agreed cap.
 
 ```{r}
 #| label: fig-newreview
@@ -265,11 +301,22 @@ plot     = plot_nr_counts, width = 14, height = 8, dpi = 150
 
 ```
 
+\newpage
 
 ### Urgent first-appointment average wait
 
 
-From **@fig-urgentwait**, we compare clinics by the **average days to first attended appointment** for urgent patients. Higher values indicate timeliness risk. Use this alongside **@fig-attended-priority** and **@fig-newreview** to prioritise clinics for reallocation.
+#### What the figure shows
+
+Figure @fig-urgentwait compares clinics by the average days from referral to first attended appointment for urgent patients. Higher values signal timeliness risk and indicate insufficient first-visit capacity relative to urgent demand.
+
+#### How to use it with the other figures
+
+Read @fig-urgentwait together with @fig-attended-priority and @fig-newreview. Prioritise clinics that show three conditions at once: long urgent waits, a high urgent share of activity, and a small New segment within total throughput. This combination points to a structural imbalance rather than a one-off surge.
+
+#### Action
+
+Shortlist clinics meeting the above profile for template reallocation. Increase protected capacity for urgent new patients, while setting safeguards to maintain adequate access for semi-urgent and routine follow-ups.
 
 ```{r}
 #| label: fig-urgentwait
@@ -321,9 +368,13 @@ p_wait_urgent
 
 ```
 
-### KPI — Urgent 30d vs Routine 365d (focus clinics)
-Building on the three screening signals, we shortlisted eight higher-risk clinics for KPI analysis.
-In @fig-04-kpi-diverging, the Urgent KPI is defined as “seen within 30 days,” and the Routine KPI as “seen within 365 days.” We observe that the two highest-volume clinics—2078B and MURCONP—sit well below the service-wide average on both KPIs, effectively pulling the overall benchmarks down. This reinforces our earlier screening and confirms 2078B as the top priority for template reallocation and operational improvement.
+\newpage
+
+### KPI 
+
+Building on the earlier comparisons of priority mix, new–review balance, and attended volume, we identified a subset of clinics most likely to require adjustment. Figure @fig-04-kpi-diverging presents their Urgent and Routine KPIs, defined respectively as “seen within 30 days” and “seen within 365 days.”
+
+Among these higher-risk clinics, both 2078B and MURCONP—our largest by throughput—fall noticeably below the service-wide average on both measures. This pattern suggests systemic access constraints rather than random variation and reinforces the earlier screening results, confirming 2078B as the leading candidate for targeted template reallocation and process improvement.
 
 ```{r}
 #| label: fig-04-kpi-diverging
@@ -458,33 +509,67 @@ p_div_focus
 
 ```
 
+\newpage
 
 ## Forecasting — Demand for 2078B
 
 ### What we mean by demand
-We define clinic demand as the total appointment capacity required to serve both sources:
-- **External demand:** new referrals arriving to the clinic (from outside).
-- **Internal demand:** the follow-up **review appointments** generated by those new patients over time.
+
+In this analysis, demand represents the total appointment capacity required for the clinic to meet all patient needs within a given period. It includes both external and internal components.
+
+The external component arises from new referrals entering the system—patients who have not yet been seen and require an initial consultation.
+
+The internal component stems from those same patients once they enter the care pathway: each new patient generates a sequence of review appointments for ongoing management, monitoring, or treatment follow-up.
+
+Together, these two streams define the clinic’s total workload. Forecasting demand therefore means estimating not only how many new patients will arrive, but also how many review visits those patients will subsequently generate.
+
 
 ### Planning identity 
+
+Based on this definition, total clinic demand can be expressed as a simple planning identity:
+
 **Total demand = External (new referrals) + Internal (reviews)**  
-= **Total new accepted referrals + (Total new accepted referrals × Review rate × Avg review visits per patient).**
+= **Total new accepted referrals + (Total new accepted referrals * Review rate * Avg review visits per patient).**
+
+This formulation links activity planning directly to referral inflows and review behaviour, allowing future capacity requirements to be forecast under different referral or follow-up scenarios.
+
 
 ## Forecasting — New referrals for 2078B
 
+### Why we forecast
+
+While the planning identity defines total demand in principle, no dataset directly specifies how many new referrals will arrive in the upcoming financial year. To estimate the external component of demand for FY2026, we therefore forecast the volume of new referrals using historical referral trends. This provides a data-driven basis for projecting overall workload and determining whether current capacity settings will be sufficient to meet expected demand.
+
 ### Aim
-Forecast monthly new referrals for clinic **2078B** to quantify the **external** component of demand.
+
+The objective of this section is to forecast the monthly number of new referrals for clinic 2078B, thereby quantifying the external component of total demand. This forecast forms the foundation for subsequent calculations of overall appointment requirements, as the inflow of new patients determines both immediate first-visit workload and the future stream of review appointments generated downstream.
 
 ### Data & split
-- **Training:** Jul-2023 … Jun-2025  
-- **Test (hold-out):** Jul-2025 … Sep-2025
+
+The modelling uses monthly referral data from July 2023 to September 2025. To ensure an unbiased evaluation of forecast performance, the data are divided into two parts:
+
+- **Training period:** July 2023 – June 2025, used to estimate model parameters and capture recent seasonal and trend behaviour.
+
+- **Test period:** July 2025 – September 2025, reserved for validation.
+This structure allows for a realistic assessment of each model’s ability to predict unseen months immediately following the training window.
+
 
 ### Models
-ARIMA, ETS, TSLM (trend + season), and SNAIVE.
+Four standard univariate time series forecasting models are compared:
+
+ARIMA – captures both autoregressive and moving-average dynamics, adjusting for trend and autocorrelation.
+
+ETS – exponential smoothing with automatic selection of additive or multiplicative components for level, trend, and seasonality.
+
+TSLM – a time series linear model incorporating deterministic trend and seasonal regressors.
+
+SNAIVE – a seasonal naïve benchmark that repeats the last observed value from the same month in the previous year.
+
+Together these models provide a balance between statistical sophistication and interpretability, ensuring that forecast differences can be attributed to identifiable model structure rather than arbitrary complexity.
 
 ### Evaluation
 
-We split the monthly series into a training window (Jul-2023 to Jun-2025) and a 3-month hold-out test window (Jul-2025 to Sep-2025). Each model (ARIMA, ETS, TSLM, SNAIVE) is fit on the training window and then asked to predict the test months. We compare the predictions against the held-out actuals using MAPE, with RMSE and MAE reported for context. The visual overlay of test-period predictions appears in @fig-overlay-2078B, and the corresponding error summary is in @tbl-errors-2078B.
+Each model is trained on the July 2023 – June 2025 window and used to predict the July – September 2025 test months. Forecast accuracy is evaluated primarily using the Mean Absolute Percentage Error (MAPE), which expresses the average deviation as a percentage of the actual values. For completeness, Root Mean Squared Error (RMSE) and Mean Absolute Error (MAE) are also reported to capture absolute and squared error magnitudes.
 
 
 
@@ -493,6 +578,9 @@ We split the monthly series into a training window (Jul-2023 to Jun-2025) and a 
 #| echo: false
 #| warning: false
 #| message: false
+#| fig-pos: "H"
+
+
 # Minimal, defensive setup for this section.
 # - If ts_2078B / train_ts / test_ts already exist, this chunk does nothing.
 # - Otherwise it builds them from a standard CSV: ClinicCode, MonthStart(yyyy-mm-01), Qty.
@@ -521,6 +609,10 @@ if (!exists("ts_2078B") || !exists("train_ts") || !exists("test_ts") || !exists(
   test_ts  <- ts_2078B |> filter(Month %in% test_months)
 }
 ```
+
+A visual overlay of the observed series and the test-period predictions is shown in @fig-overlay-2078B, allowing direct comparison of each model’s short-term forecast behaviour. The quantitative accuracy measures are summarised in @tbl-errors-2078B, providing an empirical basis for selecting the most reliable model to project new referrals into FY2026.
+
+
 
 ```{r}
 #| label: fc-02-compare-2078B
@@ -619,7 +711,7 @@ legend.position = "top")
 
 ```
 
-From @tbl-errors-2078B, SNAIVE attains the lowest MAPE on the Jul–Sep 2025 hold-out, so we adopt SNAIVE as the short-horizon model for external demand.
+
 
 
 ```{r}
@@ -643,6 +735,7 @@ locations = gt::cells_body(rows = Model == !!best_model)
 
 ```
 
+From @tbl-errors-2078B, the SNAIVE model records the lowest MAPE on the Jul–Sep 2025 hold-out, indicating the best short-term predictive accuracy among the tested methods. Its strong performance suggests that recent referral patterns are highly seasonal and stable over time, making a simple seasonal repetition more reliable than complex models. Consequently, SNAIVE is adopted as the short-horizon model for forecasting the external (new referral) component of demand for clinic 2078B.
 
 ```{r}
 #| label: fc-04-project-2078B
@@ -740,7 +833,11 @@ legend.position = "top")
 
 ```
 
-For clinic 2078B, we estimate the external component of FY2026 demand by combining observed and forecast volumes over the fiscal horizon. First, we aggregate the actual accepted new referrals for the three months already completed in FY2026—July to September 2025—which total 461. Next, we project the remaining nine months of FY2026 October 2025 through June 2026 using the model that achieved the lowest hold-out error, yielding a forecast of 1186 accepted new referrals across that period. Adding these two components produces an FY2026 external-new total of 1647. 
+For clinic 2078B, the external component of demand for FY2026 is estimated by combining both observed and forecast new referrals across the full financial year. We start by calculating the number of accepted new referrals already recorded during the first three months of FY2026, from July to September 2025, which amounts to 461 cases. These represent the actual external inflow received so far.
+
+To complete the year, we use the forecasting model that achieved the lowest error in the previous evaluation to estimate referrals for the remaining nine months (October 2025 to June 2026). The model predicts approximately 1,186 new accepted referrals over this period.
+
+By summing the observed and forecast components, we obtain a projected total of 1,647 new referrals for FY2026. This value represents the expected external demand and will be used as the baseline input for estimating total appointment needs, including the associated review workload generated by these new patients.
 
 ```{r}
 #| label: tbl-fy2026-2078B-final
@@ -772,21 +869,22 @@ one_row
 
 This arithmetic is consistent with the planning identity used throughout the report and ensures that near-term realities are respected while still providing a full-year view.
 
+
 ### Translating external referrals to total demand
 
-From FY2023–FY2025 (closed) data we observe:  
-- **Review rate (r):** 35% of referrals require at least one review visit.  
-- **Average review visits per reviewed patient (excluding the first):** **1.54**  
+Using historical data from FY2023 to FY2025, we can estimate how new referrals translate into follow-up activity. Over this three-year period, approximately 35% of patients who attended a first appointment required at least one review visit, and those who returned for reviews attended an average of 1.54 review visits (excluding the first). These parameters allow us to approximate the internal workload that will be generated by new referrals in FY2026.
 
-**Substituting values**  
-- `External demand = 1647`  
+We begin with the forecasted number of new referrals for clinic 2078B, which is 1,647 for FY2026. This represents the external demand component. The internal demand—that is, the number of follow-up review appointments generated by these new patients—can be estimated as:
+
 - `Internal demand = 1647 * 0.35 * 1.54 = 887.73`  
+
+Adding both components gives the total demand:
+
 - `Total Demand = 1647 + 887.73 = 2534.73`  
   **≈ 2,535 appointment slots**  
 
-Under these assumptions, Clinic **2078B** requires about **2,535 appointment slots** in FY2026: **1,647** for first visits and **888** for review visits.
-
-
+Rounded to the nearest whole number, this corresponds to approximately 2,535 appointment slots required for FY2026.
+In summary, clinic 2078B will need capacity for around 1,647 new appointments and 888 review appointments to meet expected demand. This total serves as the baseline for subsequent capacity planning and template allocation scenarios.
 
 
 
@@ -856,23 +954,538 @@ kable(tbl, align = "lccc")
 
 ```
 
+\newpage
 
-## Scenario / Reallocation
+## Analysis — Average supply 
+
+To establish a realistic baseline for modelling, we first examine the actual attended appointments for clinic 2078B during FY2025. These completed activities are categorised into six operational classes, defined by the combination of visit type (New or Review) and urgency level (Urgent, Semi-urgent, or Routine). This classification reflects how appointment templates are structured in practice and allows direct linkage between demand categories and available supply.
+
+Using the full-year totals of attended appointments in each class, we then calculate the average number of appointments per week by dividing each annual total by 52 weeks. This converts yearly activity into a measure of steady-state weekly throughput, assuming a consistent level of clinician session time and roster configuration throughout the year.
+
+
+```{r}
+#| label: supply-fy2025-average-six-classes
+#| echo: false
+#| message: false
+#| warning: false
+# Compute average per week (÷ 52) for six classes (New/Review × Urgent/Semi-urgent/Routine)
+# from the FY2025-only export for clinic 2078B, then print a clean table.
+
+supply_file <- "data/fy2025_2078B_appointments.csv"
+
+pick_first <- function(x, opts) {
+  hit <- intersect(opts, names(x))
+  if (length(hit)) hit[1] else NA_character_
+}
+
+normalise_flag <- function(x) {
+  if (is.logical(x)) return(as.integer(x))
+  x_chr <- as.character(x)
+  dplyr::case_when(
+    x_chr %in% c("1","TRUE","True","true","Yes","YES","yes","Y","y") ~ 1L,
+    x_chr %in% c("0","FALSE","False","false","No","NO","no","N","n") ~ 0L,
+    TRUE ~ suppressWarnings(as.integer(x_chr))
+  )
+}
+
+raw_sup <- readr::read_csv(supply_file, show_col_types = FALSE)
+
+cli_col <- pick_first(raw_sup, c("ClinicCode","SourceLocationCode","AppointmentClinicLocationCode"))
+urg_col <- pick_first(raw_sup, c("Urgency","ReferralPriorityRefId","AppointmentUrgency"))
+new_col <- pick_first(raw_sup, c("NewAttended","IsNewAttended"))
+rev_col <- pick_first(raw_sup, c("ReviewAttended","IsReviewAttended"))
+
+stopifnot(!is.na(cli_col), !is.na(urg_col), !is.na(new_col), !is.na(rev_col))
+
+sup <- raw_sup |>
+  dplyr::transmute(
+    ClinicCode      = .data[[cli_col]],
+    UrgencyNum      = suppressWarnings(as.integer(readr::parse_number(as.character(.data[[urg_col]])))),
+    NewAttended     = normalise_flag(.data[[new_col]]),
+    ReviewAttended  = normalise_flag(.data[[rev_col]])
+  ) |>
+  dplyr::filter(ClinicCode == "2078B") |>
+  dplyr::filter(NewAttended == 1 | ReviewAttended == 1) |>
+  dplyr::mutate(
+    NewReview = dplyr::case_when(
+      NewAttended == 1    ~ "New",
+      ReviewAttended == 1 ~ "Review",
+      TRUE ~ NA_character_
+    ),
+    Priority = dplyr::case_when(
+      UrgencyNum == 1 ~ "Urgent",
+      UrgencyNum == 2 ~ "Semi-urgent",
+      UrgencyNum == 3 ~ "Routine",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  dplyr::filter(!is.na(NewReview), !is.na(Priority)) |>
+  dplyr::mutate(
+    Priority  = forcats::fct_relevel(Priority, "Urgent","Semi-urgent","Routine"),
+    NewReview = forcats::fct_relevel(NewReview, "New","Review")
+  )
+
+weeks_divisor <- 52
+
+six_class_avg <- sup |>
+  dplyr::count(NewReview, Priority, name = "FY2025_Count") |>
+  dplyr::arrange(NewReview, Priority) |>
+  dplyr::mutate(
+    Avg_per_week = round(FY2025_Count / weeks_divisor, 1)
+  )
+
+knitr::kable(
+  six_class_avg,
+  align = c("l","l","r","r"),
+  col.names = c("Type","Priority","FY2025 Count","Avg / week")
+)
+```
+
+The resulting figures represent the clinic’s baseline supply capacity, that is, the volume of appointments that can be realistically delivered per week under current operational settings. In the absence of major staffing or sessional changes, we assume that FY2026 supply will remain equal to FY2025 levels. This assumption allows scenario testing to focus on how template reallocation—rather than total capacity expansion—can improve alignment between supply and demand, especially for urgent new appointments.
+
+
+### Demand–Supply gap and why optimisation is needed
+
+Having estimated the weekly demand for clinic 2078B and benchmarked it against the average weekly supply derived from FY2025 attended activity, it becomes clear that demand consistently exceeds available capacity. This persistent shortfall helps explain the extended wait times experienced by urgent patients, even though overall session time has remained stable. The underlying issue is not a lack of clinical effort, but rather an imbalance in the allocation of appointment types within the existing template. Too few slots are currently reserved for Urgent–New patients, while a substantial share continues to be occupied by follow-up reviews.
+
+Because clinician session time is effectively fixed in the short term, expanding total capacity is not a feasible option. The more practical approach is to reconfigure the existing template mix, redistributing appointments among categories to better match the actual pattern of need. The goal is to increase capacity for Urgent–New patients while maintaining reasonable access for Semi-urgent and Routine cohorts. In this way, the clinic can improve timeliness for the most critical cases without undermining continuity of care for ongoing patients.
+
+
+
+## Reallocation Model 
+
+### Literature basis
+
+To address the demand–supply imbalance, I apply a linear programming (LP) reallocation model informed by three established streams in the outpatient scheduling literature.
+First, Patrick, Puterman, and Queyranne (2008) highlight the importance of protecting higher-priority patients through thresholds or quotas, ensuring that urgent cohorts receive guaranteed access before lower-priority ones.
+Second, Green and Savin (2008) support an urgent carve-out policy, coupled with the operational practice of releasing unused urgent slots on the day of service—an approach that improves timeliness without permanently locking capacity.
+Third, Gupta and Denton (2008) demonstrate how fairness and KPI targets (such as service levels by priority or visit type) can be encoded as linear constraints, allowing managers to balance urgency protection with continuity of care.
+
+Together, these principles inform the LP formulation used here: to maximise weighted service value, enforce floors and caps that safeguard Urgent–New access, and preserve minimum service levels for semi-urgent, routine, and review patients. The model yields weekly class quotas and tracks unmet demand transparently for subsequent backlog simulation.
+
+### Objective
+
+The objective function is defined as 
+
+
+```{r, echo=FALSE, fig.align="center", out.width="60%"}
+knitr::include_graphics("report_files/fig/objective.jpg")
+```
+
+
+
+
+subject to capacity and fairness constraints.
+
+
+Symbols
+
+- $x_k$: weekly slots allocated to class $k$.
+- Class set $k \in \{\text{UN},\text{SN},\text{RN},\text{URev},\text{SRev},\text{RRev}\}$, where  
+**UN** = Urgent–New  
+**SN** = Semi-urgent–New  
+**RN** = Routine–New  
+**URev / SRev / RRev** = Urgent / Semi-urgent / Routine **Review**
+- $w_k$: class weight capturing policy value/risk for serving one slot in class $k$, set to reflect urgency $>$ visit type (New $>$ Review), decreasing monotonically:  
+  $w_{\text{UN}}=6,\; w_{\text{URev}}=5,\; w_{\text{SN}}=4,\; w_{\text{SRev}}=3,\; w_{\text{RN}}=2,\; w_{\text{RRev}}=1$.
+
+
+### Constraints
+
+While maximising the weekly *service value*, we enforce the following requirements requested by the Council Team to ensure feasibility and fairness.
+
+**1) Weekly capacity**
+
+This rule says that the total number of appointment slots given to all categories cannot go over 39 per week.
+In other words, we assume the clinic’s total staffing and session time are fixed, so we cannot add extra sessions. The model must work within the existing weekly capacity.
+
+```{r, echo=FALSE, fig.align="center", out.width="60%"}
+knitr::include_graphics("report_files/fig/c1.jpg")
+```
+
+
+
+**2) Scenario cap — Urgent–New**
+
+We test three different policy settings that decide how many Urgent–New (UN) patients can be guaranteed each week:
+Scenario A = 17/week, Scenario B = 19/week, and Scenario C = 24/week.
+This cap allows us to see what happens to waiting times and backlog if we give more protected space to urgent new patients.
+
+```{r, echo=FALSE, fig.align="center", out.width="60%"}
+knitr::include_graphics("report_files/fig/c2.jpg")
+```
+
+
+
+**3) New-share upper bound**
+
+
+This rule limits how much of the total weekly capacity can go to new patients.
+We set a maximum of 50% (so that New appointments can never take more than half of the schedule).
+This helps maintain a fair balance between bringing in new patients and providing follow-up care for existing ones.
+In Scenario C, this rule is relaxed to see the “best case” where the clinic gives more space to new patients.
+
+```{r, echo=FALSE, fig.align="center", out.width="60%"}
+knitr::include_graphics("report_files/fig/c3.jpg")
+```
+
+
+
+**4) Review floors (protect continuity of care)**
+
+These are the minimum guaranteed numbers of review appointments each week:
+
+```{r, echo=FALSE, fig.align="center", out.width="60%"}
+knitr::include_graphics("report_files/fig/c4.jpg")
+```
+
+They make sure that every urgency group still has enough follow-up visits so that ongoing patients are not delayed or forgotten when we shift capacity toward new patients.
+
+
+**5) Non-negativity and integrality**
+
+This rule just means we can’t assign a negative or fractional number of appointments.
+Each $x_k$ must be a whole, non-negative number, since we can only book complete appointment slots in real life.
+
+```{r, echo=FALSE, fig.align="center", out.width="60%"}
+knitr::include_graphics("report_files/fig/c5.jpg")
+```
+
+
+\newpage
+
+
+
 
 # Results
-## Demand–Supply Findings
-## Scenario Outcomes
 
-# Discussion
-(Add interpretation and operational implications.)
+## Reallocate Result
+
+From @fig-alloc-vs-unmet, the red bars show how many appointment slots the model allocates each week to the six categories after solving the optimisation. The blue bars show the number of patients arriving that same week who cannot be booked under the given capacity and fairness rules — in other words, the unmet demand.
+
+- Across all three policy settings where Urgent–New (UN) capacity is fixed at 17, 19, and 24 slots per week, the results follow a clear pattern:
+
+- Urgent–New demand is fully met in every scenario. The model always protects this highest-priority group first.
+
+- All review categories (Urgent Review, Semi-urgent Review, and Routine Review) also reach their minimum weekly floors, meaning ongoing patients are being followed up as planned.
+
+
+
+```{r}
+#| label: fig-alloc-vs-unmet
+#| fig-cap: "Allocated vs Unmet per week by class — Clinic 2078B (scenarios: UN=17, 19, 24)."
+#| fig-alt: "Dodged bars showing Allocated and Unmet counts per class for each scenario; facets by UN quota."
+#| fig-width: 12
+#| fig-height: 7
+#| fig-pos: "H"
+#| warning: false
+#| message: false
+
+# ---- Allocated vs Unmet (only) ----
+
+suppressPackageStartupMessages({
+library(dplyr); library(tidyr); library(ggplot2); library(scales)
+})
+
+# Core parameters
+
+S <- 39L
+classes <- c("UN","SN","RN","URev","SRev","RRev")
+
+# Weekly inflows (demand per week)
+
+lambda <- c(UN=17, SN=11, RN=4, URev=9, SRev=6, RRev=2)
+
+# Initial backlogs (New have backlog; Reviews start from zero)
+
+W0 <- c(UN=453, SN=1092, RN=440, URev=0, SRev=0, RRev=0)
+
+# Scenarios (UN weekly quota)
+
+scenarios <- c(`UN = 17`=17L, `UN = 19`=19L, `UN = 24`=24L)
+
+# Scenario-specific cap on total New per week
+
+new_cap_of <- function(un_q){
+if (un_q %in% c(17L,19L)) return(20L)
+if (un_q == 24L) return(24L)
+20L
+}
+
+# Minimum weekly floors for Reviews (protect continuity)
+
+rev_floor <- c(URev=5L, SRev=3L, RRev=1L)
+
+pmin_int <- function(...) as.integer(pmin(...))
+
+# One-week allocator (greedy) respecting UN quota, review floors and New cap
+
+# 1) UN up to its quota (and need)
+
+# 2) Enforce review floors: URev>=5, SRev>=3, RRev>=1 (bounded by need & capacity)
+
+# 3) Allocate remaining New under the total-New cap: SN first, then RN
+
+# 4) Any leftover capacity goes to URev (optional extra)
+
+allocate_one_week <- function(UN_quota, W_vec){
+NEW_CAP <- new_cap_of(UN_quota)
+need <- W_vec + lambda  # this-week need = carryover backlog + new inflow
+
+# 1) UN first
+
+serve_UN <- pmin_int(UN_quota, need["UN"])
+new_used <- serve_UN
+rem <- S - serve_UN
+
+# 2) Review floors
+
+serve_URev <- pmin_int(rem, max(0L, rev_floor["URev"]), need["URev"]); rem <- rem - serve_URev
+serve_SRev <- pmin_int(rem, max(0L, rev_floor["SRev"]), need["SRev"]); rem <- rem - serve_SRev
+serve_RRev <- pmin_int(rem, max(0L, rev_floor["RRev"]), need["RRev"]); rem <- rem - serve_RRev
+
+# 3) New remainder under total-New cap (SN first, then RN)
+
+allow_new_left <- max(0L, NEW_CAP - new_used)
+serve_SN <- pmin_int(rem, allow_new_left, need["SN"]); new_used <- new_used + serve_SN; rem <- rem - serve_SN
+allow_new_left <- max(0L, NEW_CAP - new_used)
+serve_RN <- pmin_int(rem, allow_new_left, need["RN"]); new_used <- new_used + serve_RN; rem <- rem - serve_RN
+
+# 4) Optional: push any leftover to URev
+
+serve_URev_extra <- pmin_int(rem, max(0L, (W_vec["URev"] + lambda["URev"]) - serve_URev))
+serve_URev <- serve_URev + serve_URev_extra
+
+c(UN=serve_UN, SN=serve_SN, RN=serve_RN, URev=serve_URev, SRev=serve_SRev, RRev=serve_RRev)
+}
+
+# Build data for the "Allocated vs Unmet" bars (single-week snapshot per scenario)
+
+# Unmet is defined relative to this-week inflow (cannot meet more than arrives this week)
+
+allocation_snapshot <- function(UN_quota, W_vec=W0){
+alloc <- allocate_one_week(UN_quota, W_vec)
+met_for_unmet <- pmin(as.integer(alloc[classes]), as.integer(lambda[classes]))
+unmet <- pmax(0L, as.integer(lambda[classes] - met_for_unmet))
+
+tibble(
+Class=factor(names(alloc), levels=classes),
+Allocated=as.integer(alloc),
+Unmet=as.integer(unmet),
+Scenario = paste0("UN = ", UN_quota, " (NEW cap ", new_cap_of(UN_quota), ")")
+)
+}
+
+alloc_bar_df <- dplyr::bind_rows(lapply(unname(scenarios), allocation_snapshot)) |>
+tidyr::pivot_longer(c(Allocated, Unmet), names_to="Metric", values_to="Value") |>
+dplyr::mutate(
+Scenario=factor(
+Scenario,
+levels=paste0("UN = ", unname(scenarios), " (NEW cap ", sapply(unname(scenarios), new_cap_of), ")")
+),
+Class=factor(Class, levels=classes),
+Metric=factor(Metric, levels=c("Allocated","Unmet"))
+)
+
+# Plot (with labels)
+
+dodge_w <- 0.72
+p_alloc <- ggplot(alloc_bar_df, aes(x=Class, y=Value, fill=Metric)) +
+geom_col(position=position_dodge(width=dodge_w), width=0.70) +
+geom_text(aes(label=scales::number(Value, accuracy=1)),
+position=position_dodge(width=dodge_w), vjust=-0.35, size=3.6, fontface="bold") +
+facet_wrap(~ Scenario, ncol=2, scales="free_y") +
+labs(
+title="Allocated vs Unmet per week (by class)",
+subtitle=paste("Clinic 2078B | Weekly capacity S =", S,
+"| Inflows per wk:", paste(names(lambda), lambda, sep="=", collapse=", "),
+"| Review floors:", paste(names(rev_floor), rev_floor, sep="≥", collapse=", ")),
+x=NULL, y="Cases per week", fill=NULL
+) +
+scale_y_continuous(expand=expansion(mult=c(0.02,0.18))) +
+theme_minimal(base_size=12) +
+theme(legend.position="top",
+panel.grid.major.x = element_blank())
+
+p_alloc
+
+```
+
+When we increase the weekly target for Urgent–New from 17 to 24 slots, the model directs more capacity to urgent patients, which is exactly what we expect. However, because total weekly supply stays fixed, this shift slightly reduces the space available for other new patients. As a result, the blue bars for SN and RN remain visible across all three settings — their unmet demand persists.
+
+This means that while raising Urgent–New capacity improves access for the most critical cases, it does not eliminate waiting for Semi-urgent and Routine patients. To understand how these weekly shortfalls accumulate over time, we next look at the waitlist by class. This helps us see how the backlog evolves under each policy and how much timeliness improvement we actually gain for Urgent–New, compared with the impact on other groups.
+
+## Backlog influence
+
+### 300-week simulation setup
+
+At the start of the simulation (Week 0), we use the current data extract to set the baseline backlog:
+Urgent–New (UN) = 453, Semi-urgent–New (SN) = 1,092, and Routine–New (RN) = 440 patients waiting.
+
+From @fig-backlog-300, we can see how each group’s backlog changes over the next 300 weeks under the three capacity settings.
+
+
+```{r}
+# =============================
+# 300-week backlog simulation driven by the bar snapshot
+# - Per scenario, weekly service equals the bar-chart "Allocated".
+# - If backlog is zero, service is capped at that week's inflow.
+# =============================
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(ggplot2); library(purrr); library(scales)
+})
+
+# 1) Extract per-scenario weekly service plan (Allocated)
+alloc_plan <- alloc_bar_df %>%
+  filter(Metric == "Allocated") %>%
+  select(Scenario, Class, Alloc = Value) %>%
+  mutate(Class = factor(as.character(Class), levels = classes))
+
+# 2) Inflow as a long table
+inflow_tbl <- tibble(
+  Class  = factor(classes, levels = classes),
+  Inflow = as.integer(lambda[classes])
+)
+
+# 3) Initial backlog (New only), Reviews start at zero
+Wstart <- c(UN=453L, SN=1092L, RN=440L, URev=0L, SRev=0L, RRev=0L)
+Wstart <- setNames(as.integer(Wstart[classes]), classes)
+
+# 4) Simulate 300 weeks from the snapshot allocations
+simulate_from_snapshot <- function(scn_name, weeks = 300L){
+  # Build a complete named vector of weekly service for this scenario
+  plan <- alloc_plan %>% filter(Scenario == scn_name)
+  a_vec <- setNames(rep.int(0L, length(classes)), classes)
+  a_vec[as.character(plan$Class)] <- as.integer(plan$Alloc)
+
+  lam_vec <- setNames(inflow_tbl$Inflow, as.character(inflow_tbl$Class))
+  W_now   <- Wstart
+
+  rows <- vector("list", weeks + 1L)
+  rows[[1L]] <- tibble(Week=0L, Class=factor(classes, levels=classes), Backlog=as.integer(W_now))
+
+  for(t in seq_len(weeks)){
+    # If backlog > 0, we can use the full planned allocation; otherwise cap by inflow
+    alloc_eff <- ifelse(W_now > 0L, a_vec, pmin(a_vec, lam_vec))
+    # Backlog evolves as: next = max(0, current + inflow - effective service)
+    W_next <- pmax.int(0L, W_now + lam_vec - alloc_eff)
+
+    rows[[t+1L]] <- tibble(Week=t, Class=factor(classes, levels=classes), Backlog=as.integer(W_next))
+    W_now <- W_next
+  }
+  bind_rows(rows) %>% mutate(Scenario = scn_name)
+}
+
+# 5) Run all scenarios (UN = 17, 19, 24)
+sim_300 <- map_dfr(levels(alloc_bar_df$Scenario), simulate_from_snapshot)
+```
+
+
+```{r}
+#| label: fig-backlog-300
+#| fig-cap: "Backlog trajectories over 300 weeks — Clinic 2078B."
+#| fig-alt: "Three panels (UN=17, UN=19, UN=24) showing backlog lines for six classes over 300 weeks."
+#| fig-width: 12
+#| fig-height: 7
+#| fig-pos: "H"
+#| warning: false
+#| message: false
+
+
+# 6) Plot
+ggplot(sim_300, aes(x = Week, y = Backlog, color = Class)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ Scenario, ncol = 3, scales = "free_y") +
+  labs(
+    title = "Backlog trajectories over 300 weeks",
+    subtitle = paste(
+      "\nInitial waitlist: UN=453, SN=1092, RN=440."
+    ),
+    x = "Week", y = "Backlog (cases)"
+  ) +
+  scale_y_continuous(labels = label_comma()) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(), legend.position = "right")
+
+
+```
+
+
+For Semi-urgent and Routine, the backlog keeps growing in all scenarios. This happens because their weekly service remains smaller than their inflow — meaning more patients are joining the queue each week than are being seen.
+
+For Urgent–New, the pattern is quite different:
+
+In Scenario A, capacity just matches weekly inflow. The backlog stops growing but never clears, staying flat over time.
+
+In Scenario B, capacity slightly exceeds inflow, so the backlog slowly declines and fully clears after about 227 weeks (around 4 years).
+
+In Scenario C, extra capacity accelerates the reduction — the backlog clears in roughly 65 weeks (about 1.25 years).
+
+
+Overall, the simulation shows that small increases in Urgent–New capacity lead to large improvements in clearance time, while Semi-urgent and Routine groups remain constrained by the fixed total supply.
+
+## Recommendations
+
+Together, these three scenarios give clinic managers a clear set of policy options:
+
+**Scenario A — Maintain stability without clearance**
+In this setting, the clinic allocates 17 slots per week to Urgent–New patients.
+This level exactly matches the weekly inflow, meaning the clinic can keep up with new urgent demand but cannot make progress on reducing the existing waitlist.
+The backlog stays flat over time — it does not grow further, but it also never clears.
+Scenario A is therefore only suitable if the clinic’s goal is to stabilise the waiting list rather than reduce it. It provides short-term control without additional strain on other categories, but does not achieve long-term improvement in timeliness.
+
+**Scenario B — Balanced improvement over the medium term**
+Here, the clinic increases Urgent–New capacity to 19 slots per week, slightly above the current inflow rate.
+This small adjustment allows the backlog to start decreasing, though the clearance is gradual — it would take about 227 weeks to fully remove the Urgent–New waitlist.
+Scenario B represents a balanced option, improving timeliness for the most critical group while keeping Semi-urgent and Routine pressures manageable.
+It is a practical choice for clinics that want visible progress but need to protect review capacity and avoid large disruptions to other cohorts.
+
+**Scenario C — Rapid clearance with trade-offs **
+This scenario prioritises urgent access more aggressively, allocating 24 slots per week to Urgent–New.
+With this much capacity, the backlog clears much faster — in roughly 65 weeks.
+However, because total weekly capacity is fixed, this setting leaves less room for Semi-urgent and Routine patients, whose unmet demand will continue to grow unless additional sessions or efficiency improvements are introduced.
+Scenario C is therefore a high-intensity option, suitable if leadership wants to clear the Urgent–New list quickly, accepting that other categories may temporarily experience longer waits.
+
+These results can be presented to the Urology leadership team so they can decide which option best fits their service goals and risk tolerance — whether to prioritise speed, balance, or stability.
+
+\newpage
 
 # Conclusion
-(Summarise recommendations and expected impact.)
 
-# Limitations & Future Work
-(List data/method limits and next steps.)
+This project was conducted in two main phases.
+
+**Phase 1 – Screening of clinics.**
+We evaluated 26 Urology clinics using five key indicators: priority mix, New-to-Review ratio, overall demand volume, Urgent–New (UN) waiting time, and KPI attainment.
+The aim was to identify where a change in appointment template would have the greatest operational and patient impact.
+This comparative screening highlighted clinic 2078B as the site with the strongest case for intervention, given its high throughput, large urgent share, and persistent timeliness pressure.
+
+**Phase 2 – Capacity optimisation and simulation.**
+We then developed a weekly allocation model that maximises weighted service value under fixed total capacity.
+The model incorporates fairness and feasibility constraints, including minimum review floors and an upper bound on the total New share, ensuring that changes remain realistic and clinically balanced.
+Three scenarios were tested, corresponding to Urgent–New quotas of 17, 19, and 24 slots per week, and each configuration was simulated over 300 weeks starting from the current waitlist position.
+
+\newpage
+
+# Limitations and Future Work
+
+## Limitations 
+
+
+With fixed session capacity, any scenario that protects Urgent-New will push pressure onto SN/RN to some extent. The best real-world outcome is likely a combo of modest capacity uplift plus reallocation, so UN improves without unacceptable spillover to SN/RN.
+
+## Future Work
+
+Augment the objective with an unmet-demand penalty so the model learns more calibrated service weights and targets the right trade-offs. Optionally, design a phased policy after UN clears (automatic spillover to SN) and test sensitivity to the penalty strength.
+
+Operationalisation with schedulers. Co-design per-week constraints for all six classes (UN/SN/RN/URev/SRev/RRev) with clinic schedulers so the final allocation can be implemented directly in the hospital booking system.
+
+\newpage
 
 # References
-(Add citations.)
 
+Patrick, J., Puterman, M. L., & Queyranne, M. (2008). Dynamic multipriority patient scheduling for a diagnostic resource. Operations Research, 56(6), 1507–1525. https://doi.org/10.1287/opre.1080.0590
 
+Green, L. V., & Savin, S. (2008). Reducing delays for medical appointments: A queueing approach. Operations Research, 56(6), 1526–1538. https://doi.org/10.1287/opre.1080.0575
+
+Gupta, D., & Denton, B. (2008). Appointment scheduling in health care: Challenges and opportunities. IIE Transactions, 40(9), 800–819. https://doi.org/10.1080/07408170802165880
