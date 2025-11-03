@@ -13,6 +13,7 @@ format:
 execute:
   cache: false
   freeze: false
+reportfor: "Monash Health"
 ---
 
 ```{r setup-screening, include=FALSE}
@@ -34,18 +35,22 @@ knitr::opts_chunk$set(echo = FALSE,message = FALSE, warning = FALSE, fig.align =
 
 # Abstract {.unnumbered}
 
-Specialist clinics are under pressure: demand has grown, urgent patients wait too long, and session time cannot be expanded quickly. This report builds a simple and repeatable way to adjust appointment templates so we use the sessions we already have more effectively. The pipeline is three parts: first we screen all 26 clinics with five signals to find where a change would help the most; next we estimate short-term demand and compare it with typical weekly supply; finally we test a few realistic template settings and show what they mean for waitlists.
+Specialist clinics are under pressure: demand has grown, urgent patients wait too long, and session time cannot be expanded quickly. This report builds a simple and repeatable way to adjust appointment templates so that existing session capacity can be used more effectively. The pipeline is three parts: first we screen all 26 clinics with five signals to find where a change would help the most; next we estimate short-term demand and compare it with typical weekly supply; finally we test a few realistic template settings and show what they mean for waitlists.
 
-Using de-identified data, we reconstruct weekly counts by priority and visit type, then run scenario tests that lift access for urgent new patients while still protecting reviews. For clinic 2078B we show three options: keep urgent new at seventeen per week, lift it to nineteen, or lift it to twenty-four. We simulate backlog paths for three hundred weeks starting from the current waitlist. The results are clear: the first option holds steady but does not reduce the urgent list, the second clears it in roughly four years with moderate pressure on semi-urgent and routine, and the third clears it in about fifteen months but needs extra care to avoid spill-over. The outcome is a set of decisions the clinic can actually use, plus a simple way to monitor progress and adjust settings over time.
+Using de-identified data, we reconstruct weekly counts by priority and visit type, then run scenario tests that lift access for urgent new patients while still protecting reviews. For clinic 2078B we evaluate three options: keep urgent new at seventeen per week, lift it to nineteen, or lift it to twenty-four. We simulate backlog paths for three hundred weeks starting from the current waitlist. The results are clear: the first option holds steady but does not reduce the urgent list, the second clears it in roughly four years with moderate pressure on semi-urgent and routine, and the third clears it in about fifteen months but needs extra care to avoid spill-over. The outcome is a set of decisions the clinic can actually use, plus a simple way to monitor progress and adjust settings over time.
 
 # Background & Motivation {.unnumbered}
 
 
-Motivation. Public specialist clinics operate with persistent demand that exceeds short-term capacity. Session time is largely fixed by staffing, rosters, rooms, and funding cycles. As a result, throughput cannot be lifted quickly by adding clinics. At the same time, historical booking practice did not enforce clear rules for the mix of new and review visits across priority tiers. This looseness produced a gradual mismatch between capacity and need, most visible in prolonged waits for urgent new referrals. The practical question is not how to create more time in the near term, but how to use the existing time more effectively.
+**Motivation** 
+Public specialist clinics operate with persistent demand that exceeds short-term capacity. This issue has become even more pronounced in the post-COVID period, when patient flow and referral patterns changed significantly. Session time is largely fixed by staffing, rosters, room availability, and funding cycles. As a result, throughput cannot be lifted quickly by simply adding more clinics. Meanwhile, historical booking practices did not enforce clear rules for the mix of new and review visits across priority tiers. This looseness has produced a gradual mismatch between capacity and need, most evident in prolonged waits for urgent new referrals. The practical question, therefore, is not how to create more time in the short term, but how to use the existing time more effectively.
 
-Research question. How can appointment templates be re-balanced under fixed weekly supply so that urgent waiting times fall, while continuity of care is preserved for semi-urgent and routine cohorts? The study seeks a policy that is operationally feasible, auditable, and explainable to clinical leads and schedulers.
 
-Context and rationale. Referral volumes and the priority mix have shifted in the post-pandemic period. Legacy templates that once worked now under-serve urgent new patients. Clinics also face external performance expectations around timely access and equity across cohorts. A structured method is needed to identify where reallocation will help most, to quantify near-term pressure on each class, and to test realistic template settings before any change is rolled out.
+**Research question**  
+How can appointment templates be re-balanced under fixed weekly supply so that urgent waiting times fall, while continuity of care is preserved for semi-urgent and routine cohorts? The study seeks a policy that is operationally feasible, auditable, and explainable to clinical leads and schedulers.
+
+**Context and rationale**  
+Referral volumes and the priority mix have shifted in the post-pandemic period. Legacy templates that once worked now under-serve urgent new patients. Clinics also face external performance expectations around timely access and equity across cohorts. A structured method is needed to identify where reallocation will help most, to quantify near-term pressure on each class, and to test realistic template settings before any change is rolled out.
 
 # Introduction
 ## Aim and contribution 
@@ -228,7 +233,7 @@ plot_pri_counts
 ### New vs Review
 #### Why this matters
 
-Figure @fig-newreview shows attended activity by clinic, split into New and Review. When New is persistently under-allocated in high-volume clinics, urgent new referrals accumulate and first-appointment waits lengthen. The aim is to detect this structural imbalance early and target clinics for template reallocation.
+@fig-newreview shows attended activity by clinic, split into New and Review. When New is persistently under-allocated in high-volume clinics, urgent new referrals accumulate and first-appointment waits lengthen. The aim is to detect this structural imbalance early and target clinics for template reallocation.
 
 #### How to read it
 
@@ -546,7 +551,7 @@ The objective of this section is to forecast the monthly number of new referrals
 
 ### Data & split
 
-The modelling uses monthly referral data from July 2023 to September 2025. To ensure an unbiased evaluation of forecast performance, the data are divided into two parts:
+The modelling uses monthly referral data from July 2023 to September 2025. Data were extracted from the internal referral database, cleaned to remove duplicates and cancelled cases. To ensure an unbiased evaluation of forecast performance, the data are divided into two parts:
 
 - **Training period:** July 2023 – June 2025, used to estimate model parameters and capture recent seasonal and trend behaviour.
 
@@ -1044,11 +1049,12 @@ knitr::kable(
 The resulting figures represent the clinic’s baseline supply capacity, that is, the volume of appointments that can be realistically delivered per week under current operational settings. In the absence of major staffing or sessional changes, we assume that FY2026 supply will remain equal to FY2025 levels. This assumption allows scenario testing to focus on how template reallocation—rather than total capacity expansion—can improve alignment between supply and demand, especially for urgent new appointments.
 
 
-### Demand–Supply gap and why optimisation is needed
+### Demand–Supply Gap and the Need for Optimisation
 
-Having estimated the weekly demand for clinic 2078B and benchmarked it against the average weekly supply derived from FY2025 attended activity, it becomes clear that demand consistently exceeds available capacity. This persistent shortfall helps explain the extended wait times experienced by urgent patients, even though overall session time has remained stable. The underlying issue is not a lack of clinical effort, but rather an imbalance in the allocation of appointment types within the existing template. Too few slots are currently reserved for Urgent–New patients, while a substantial share continues to be occupied by follow-up reviews.
+Comparing the estimated weekly demand for clinic 2078B with the average weekly supply observed in FY2025 reveals that demand persistently exceeds available capacity. This sustained shortfall explains the extended waiting times faced by urgent patients, despite stable session availability. The underlying problem is not inadequate clinical effort, but an imbalance in how appointment types are distributed within the existing template. Currently, too few slots are reserved for Urgent–New patients, while a disproportionate share of capacity is occupied by follow-up reviews.
 
-Because clinician session time is effectively fixed in the short term, expanding total capacity is not a feasible option. The more practical approach is to reconfigure the existing template mix, redistributing appointments among categories to better match the actual pattern of need. The goal is to increase capacity for Urgent–New patients while maintaining reasonable access for Semi-urgent and Routine cohorts. In this way, the clinic can improve timeliness for the most critical cases without undermining continuity of care for ongoing patients.
+Because clinician session time is effectively fixed in the short term, expanding total capacity is not immediately feasible. A more practical approach is to reconfigure the existing template, redistributing appointment types to better align with the actual pattern of need. The aim is to increase capacity for Urgent–New patients while maintaining adequate access for Semi-urgent and Routine cohorts. In this way, the clinic can improve timeliness for the most critical patients without compromising continuity of care for those requiring ongoing management.
+
 
 
 
@@ -1092,7 +1098,7 @@ Symbols
 
 ### Constraints
 
-While maximising the weekly *service value*, we enforce the following requirements requested by the Council Team to ensure feasibility and fairness.
+While maximising the weekly *service value*, we enforce the following requirements requested by the Consulting Team to ensure feasibility and fairness.
 
 **1) Weekly capacity**
 
@@ -1311,7 +1317,7 @@ p_alloc
 
 ```
 
-When we increase the weekly target for Urgent–New from 17 to 24 slots, the model directs more capacity to urgent patients, which is exactly what we expect. However, because total weekly supply stays fixed, this shift slightly reduces the space available for other new patients. As a result, the blue bars for SN and RN remain visible across all three settings — their unmet demand persists.
+When we increase the weekly target for Urgent–New from 17 to 24 slots, the model directs more capacity to urgent patients, which is exactly what we expect. However, because total weekly supply stays fixed, this shift slightly reduces the space available for other new patients. As a result, the blue bars for SN and RN indicate persistent unmet demand. 
 
 This means that while raising Urgent–New capacity improves access for the most critical cases, it does not eliminate waiting for Semi-urgent and Routine patients. To understand how these weekly shortfalls accumulate over time, we next look at the waitlist by class. This helps us see how the backlog evolves under each policy and how much timeliness improvement we actually gain for Urgent–New, compared with the impact on other groups.
 
@@ -1452,15 +1458,15 @@ These results can be presented to the Urology leadership team so they can decide
 \newpage
 
 # Conclusion
+This project demonstrates that, even within fixed session capacity, a data-driven optimisation framework can meaningfully enhance access equity across patient cohorts.  
+The analysis was implemented in two main phases.
 
-This project was conducted in two main phases.
-
-**Phase 1 – Screening of clinics.**
+**Phase 1 — Screening of clinics:**
 We evaluated 26 Urology clinics using five key indicators: priority mix, New-to-Review ratio, overall demand volume, Urgent–New (UN) waiting time, and KPI attainment.
 The aim was to identify where a change in appointment template would have the greatest operational and patient impact.
 This comparative screening highlighted clinic 2078B as the site with the strongest case for intervention, given its high throughput, large urgent share, and persistent timeliness pressure.
 
-**Phase 2 – Capacity optimisation and simulation.**
+**Phase 2 – Capacity optimisation and simulation:**
 We then developed a weekly allocation model that maximises weighted service value under fixed total capacity.
 The model incorporates fairness and feasibility constraints, including minimum review floors and an upper bound on the total New share, ensuring that changes remain realistic and clinically balanced.
 Three scenarios were tested, corresponding to Urgent–New quotas of 17, 19, and 24 slots per week, and each configuration was simulated over 300 weeks starting from the current waitlist position.
@@ -1484,8 +1490,16 @@ Operationalisation with schedulers. Co-design per-week constraints for all six c
 
 # References
 
-Patrick, J., Puterman, M. L., & Queyranne, M. (2008). Dynamic multipriority patient scheduling for a diagnostic resource. Operations Research, 56(6), 1507–1525. https://doi.org/10.1287/opre.1080.0590
+Green, L. V., & Savin, S. (2008). Reducing delays for medical appointments: A queueing approach. *Operations Research, 56*(6), 1526–1538. https://doi.org/10.1287/opre.1080.0575  
 
-Green, L. V., & Savin, S. (2008). Reducing delays for medical appointments: A queueing approach. Operations Research, 56(6), 1526–1538. https://doi.org/10.1287/opre.1080.0575
+Gupta, D., & Denton, B. (2008). Appointment scheduling in health care: Challenges and opportunities. *IIE Transactions, 40*(9), 800–819. https://doi.org/10.1080/07408170802165880  
 
-Gupta, D., & Denton, B. (2008). Appointment scheduling in health care: Challenges and opportunities. IIE Transactions, 40(9), 800–819. https://doi.org/10.1080/07408170802165880
+Patrick, J., Puterman, M. L., & Queyranne, M. (2008). Dynamic multipriority patient scheduling for a diagnostic resource. *Operations Research, 56*(6), 1507–1525. https://doi.org/10.1287/opre.1080.0590  
+
+R Core Team. (2024). *R: A Language and Environment for Statistical Computing.* R Foundation for Statistical Computing, Vienna, Austria. https://www.R-project.org/  
+
+Monash Health. (2023). *Specialist Clinics Reporting Business Rules (Version 12/04/2023).* Monash Health Business Intelligence. [Internal document].
+
+
+**GitHub Repository:**  
+[https://github.com/lihsuanchung/ETC5543-lihsuan-project](https://github.com/lihsuanchung/ETC5543-lihsuan-project)
