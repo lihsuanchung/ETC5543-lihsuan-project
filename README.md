@@ -47,23 +47,20 @@ The study was conducted as part of a partnership with **Monash Health’s Busine
 
 
 ## Repository Structure
+
+```
 ETC5543-lihsuan-project/
 ├── _extensions/quarto-monash/report/ # Monash Quarto extension for consistent report style
-│
 ├── charts_fy2025_urology/ # Figures and charts used in the final report
-│
 ├── data/ # Filtered and de-identified datasets (simulated for analysis)
-│
 ├── report_cache/ # Temporary cache created during Quarto rendering
-│
 ├── report_files/ # Supporting media files (images) used inside the report
-│
 ├── sql/ # SQL scripts used to verify data volume and match internal property ID reports
-│
 ├── report.qmd # Main Quarto analysis and report file
 ├── report.pdf # Final rendered report
 ├── README.md # This file – project overview and structure
 └── LICENSE # MIT License for open-source use
+```
 
 ## Reproducibility
 
